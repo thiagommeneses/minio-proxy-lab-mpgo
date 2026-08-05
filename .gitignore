@@ -1,0 +1,12 @@
+# ambiente local
+.env
+
+# certificados gerados localmente
+nginx/certs/
+
+# vídeo de teste (baixado pelo script, não versionar binário grande)
+assets/*.mp4
+
+# sistema
+.DS_Store
+Thumbs.db
