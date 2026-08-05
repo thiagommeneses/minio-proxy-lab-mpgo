@@ -6,6 +6,8 @@ nginx/certs/
 
 # vídeo de teste (baixado pelo script, não versionar binário grande)
 assets/*.mp4
+assets/*.zip
+assets/.download.tmp
 
 # sistema
 .DS_Store
