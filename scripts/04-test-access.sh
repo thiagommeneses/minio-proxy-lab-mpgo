@@ -17,6 +17,8 @@ command -v curl >/dev/null 2>&1 || die "curl não encontrado no PATH"
 
 PASS=0
 FAIL=0
+TMPFILE="$(mktemp -t mpl-download.XXXXXX)"
+trap 'rm -f "$TMPFILE"' EXIT
 
 check() { # check <descrição> <esperado> <obtido>
     if [ "$2" = "$3" ]; then
@@ -37,23 +39,23 @@ http_code() {
 }
 
 # ---------------------------------------------------------------------------
-info "1/5  proxy responde"
+info "1/6  proxy responde"
 check "NGINX no ar (HTTPS)" "200" "$(http_code -m 10 "$PUBLIC_ENDPOINT/healthz")"
 
 # ---------------------------------------------------------------------------
-info "2/5  MinIO não acessível diretamente pelo host"
+info "2/6  MinIO não acessível diretamente pelo host"
 # 000 = conexão recusada ou timeout, que é exatamente o resultado desejado.
 check "MinIO sem porta publicada" "000" "$(http_code -m 3 "http://127.0.0.1:9000/")"
 
 # ---------------------------------------------------------------------------
-info "3/5  gerando URL pré-assinada"
+info "3/6  gerando URL pré-assinada"
 URL="$(bash scripts/03-generate-presigned-url.sh)" \
     || die "falha ao gerar a URL pré-assinada"
 printf '     %s\n' "$URL"
 
 # ---------------------------------------------------------------------------
-info "4/5  download do objeto pelo proxy (GET, nunca HEAD)"
-STATS="$(curl -sk -o /dev/null -w '%{http_code} %{content_type} %{size_download}' \
+info "4/6  download do objeto pelo proxy (GET, nunca HEAD)"
+STATS="$(curl -sk -o "$TMPFILE" -w '%{http_code} %{content_type} %{size_download}' \
          -m 300 "$URL" 2>/dev/null || true)"
 [ -n "$STATS" ] || STATS="000 - 0"
 # shellcheck disable=SC2086
@@ -63,8 +65,18 @@ CODE="${1:-000}"; CTYPE="${2:--}"; SIZE="${3:-0}"
 check "GET do objeto" "200" "$CODE"
 printf '     content-type: %s   bytes: %s\n' "$CTYPE" "$SIZE"
 
+if [ -f assets/video-teste.mp4 ]; then
+    if cmp -s assets/video-teste.mp4 "$TMPFILE"; then
+        check "conteúdo íntegro (byte a byte)" "identico" "identico"
+    else
+        check "conteúdo íntegro (byte a byte)" "identico" "difere"
+    fi
+else
+    warn "assets/video-teste.mp4 ausente, integridade não verificada"
+fi
+
 # ---------------------------------------------------------------------------
-info "5/5  streaming com Range (seek do player)"
+info "5/6  streaming com Range (seek do player)"
 check "206 Partial Content" "206" "$(http_code -r 0-1023 -m 30 "$URL")"
 
 RANGE_BYTES="$(curl -sk -r 0-1023 -o /dev/null -w '%{size_download}' -m 30 "$URL" 2>/dev/null || true)"
@@ -73,6 +85,12 @@ check "1024 bytes no range pedido" "1024" "${RANGE_BYTES:-0}"
 CONTENT_RANGE="$(curl -sk -r 0-1023 -o /dev/null -D- -m 30 "$URL" 2>/dev/null \
                  | tr -d '\r' | awk -F': ' '/^[Cc]ontent-[Rr]ange:/{print $2; exit}')"
 printf '     content-range: %s\n' "${CONTENT_RANGE:-<ausente>}"
+
+# ---------------------------------------------------------------------------
+# Sem isto, um bucket público passaria em tudo acima e a PoC não provaria nada.
+info "6/6  a assinatura está mesmo sendo verificada"
+check "sem query string -> 403" "403" "$(http_code -m 15 "${URL%%\?*}")"
+check "assinatura adulterada -> 403" "403" "$(http_code -m 15 "${URL%?}X")"
 
 # ---------------------------------------------------------------------------
 info "certificado apresentado pelo proxy"
