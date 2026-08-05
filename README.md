@@ -189,7 +189,15 @@ bash scripts/02-upload-test-video.sh
 ```
 
 Se `assets/video-teste.mp4` não existir, baixa o arquivo de `TEST_VIDEO_URL`
-(Big Buck Bunny, CC-BY Blender Foundation) e então envia para o bucket.
+(Big Buck Bunny, CC-BY Blender Foundation) e envia para o bucket.
+
+`TEST_VIDEO_URL` pode apontar para um `.mp4` **ou** para um `.zip` contendo o
+`.mp4` — a origem usada hoje só distribui a versão compactada. O script detecta
+o formato pelo conteúdo, extrai quando necessário e recusa continuar se o
+resultado não for um MP4 válido (checa o box `ftyp`). Isso evita o caso
+silencioso de um ZIP renomeado, que trafega íntegro pelo proxy mas não abre em
+player nenhum.
+
 Para usar um vídeo próprio, basta colocá-lo nesse caminho antes de rodar.
 
 ### 7. Gerar a URL pré-assinada
@@ -258,9 +266,24 @@ PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh
 
 ## Problemas comuns
 
-### `SignatureDoesNotMatch`
+### `403 SignatureDoesNotMatch` só no `curl -I`
 
-Causa mais provável: o `Host` visto pelo MinIO é diferente do usado na assinatura.
+**Não é bug de configuração.** A assinatura SigV4 cobre o método HTTP, e
+`mc share download` assina para `GET`. Um `HEAD` (`curl -I`) monta um canonical
+request diferente e o MinIO recusa, mesmo com tudo correto.
+
+O sintoma é reconhecível: `HEAD` devolve `403` e `GET` devolve `200`/`206` na
+mesma URL. Teste sempre com `GET`:
+
+```bash
+curl -k -s -o /dev/null -w '%{http_code}\n' "$URL"          # 200
+curl -k -s -r 0-1023 -o /dev/null -w '%{http_code}\n' "$URL"  # 206
+```
+
+### `SignatureDoesNotMatch` no `GET` também
+
+Aí sim é configuração. Causa mais provável: o `Host` visto pelo MinIO é
+diferente do usado na assinatura.
 
 - confirme `proxy_set_header Host $http_host;` em `nginx/nginx.conf`;
 - confirme que `NGINX_HTTPS_PORT` no `.env` é igual ao `listen ... ssl` do `nginx.conf`;
@@ -290,10 +313,40 @@ Confirme se o bucket foi criado e se o nome bate entre `.env`, scripts e a URL.
 - o `log_format lab` do NGINX registra `range=` e `status=` em cada requisição:
   `docker compose logs -f nginx`.
 
-### Aviso de certificado no navegador
+### Aviso de certificado no navegador (`NET::ERR_CERT_AUTHORITY_INVALID`)
 
-Esperado com certificado autoassinado. Aceite a exceção ou instale o certificado
-como confiável na máquina. Em `curl`, use `-k`.
+Esperado com certificado autoassinado, e **não invalida o critério de sucesso**:
+o certificado apresentado é o do proxy, que é justamente o que se quer provar.
+Clique em "Avançado" → "Continue até videos.lab.local".
+
+Para navegar sem o aviso, instale o certificado como confiável no Windows:
+
+```powershell
+# PowerShell como administrador, a partir da pasta do projeto
+Import-Certificate -FilePath .\nginx\certs\server.crt `
+  -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+Depois reinicie o navegador. Em `curl`, continue usando `-k`.
+
+### O vídeo não reproduz, mas o download bate byte a byte
+
+Verifique se o arquivo é mesmo um MP4:
+
+```bash
+file assets/video-teste.mp4    # esperado: ISO Media, MP4 ...
+```
+
+Se aparecer `Zip archive data`, o arquivo veio de uma execução antiga, anterior
+à extração automática. Apague e rode o script de novo:
+
+```bash
+rm assets/video-teste.mp4
+bash scripts/02-upload-test-video.sh
+```
+
+O script agora recusa fazer upload de qualquer arquivo que não tenha o box
+`ftyp`, então esse caso não passa mais despercebido.
 
 ### `413 Request Entity Too Large` no upload
 

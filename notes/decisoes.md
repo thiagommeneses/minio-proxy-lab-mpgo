@@ -77,6 +77,17 @@ central e adiciona superfície de erro. Bucket e upload são feitos por script.
 **Consequência:** o setup passa a depender de rede e de um link externo. O script
 falha com mensagem clara e o arquivo pode ser colocado manualmente.
 
+**Atualização em 05/08/2026:** a origem deixou de distribuir o `.mp4` avulso e
+hoje só publica o `.zip` com o MP4 dentro. O script `02` passou a detectar o
+formato **pelo conteúdo** (magic bytes `PK` para ZIP, box `ftyp` para MP4) e a
+extrair o maior `.mp4` de dentro do arquivo, usando `python3` ou `unzip`.
+
+Além disso, o script agora **recusa fazer upload** de qualquer arquivo sem o box
+`ftyp`. O motivo é que a falha anterior era silenciosa: um ZIP renomeado para
+`.mp4` sobe normalmente, trafega íntegro pelo proxy, passa no `cmp` byte a byte
+e em todos os testes de `Range` — e mesmo assim nenhum player abre. Sem essa
+checagem, o critério 1 pareceria atendido sem estar.
+
 ---
 
 ## D6 — Configuração do NGINX em arquivo único

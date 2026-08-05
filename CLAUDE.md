@@ -240,6 +240,7 @@ O laboratório é considerado bem-sucedido quando:
 | `Range` não repassado | sem seek, download inteiro | repassar `Range` e permitir `206` |
 | Expiração curta durante o teste | `403` no meio da validação | usar expiração de 1h nos testes |
 | Certificado autoassinado | aviso no navegador, `curl` falha | usar `curl -k` ou confiar no CA local |
+| Testar com `HEAD` (`curl -I`) | `403 SignatureDoesNotMatch` com o proxy correto | a assinatura cobre o método; testar sempre com `GET` |
 | `client_max_body_size` padrão | upload grande falha com `413` | ajustar no NGINX se houver upload via proxy |
 
 ---
@@ -284,7 +285,7 @@ O laboratório é considerado bem-sucedido quando:
 | 12 | Aliases do `mc` | `lab` (admin, direto) e `proxy` (somente presign) | tarefas administrativas não devem depender do proxy |
 | 13 | Config do NGINX | arquivo único `nginx/nginx.conf`, portas fixas | legibilidade acima de DRY; a duplicação entre `.env` e `nginx.conf` é coberta por checagem automática em `common.sh` |
 | 14 | Console do MinIO | adiado para depois da validação do vídeo | WebSocket e redirect adicionam risco sem ajudar a premissa central |
-| 15 | Vídeo de teste | baixado no setup via `TEST_VIDEO_URL` | reproduzível do zero sem versionar binário grande |
+| 15 | Vídeo de teste | baixado no setup via `TEST_VIDEO_URL`, com extração de `.zip` e validação do box `ftyp` | reproduzível do zero sem versionar binário grande; a validação evita subir um ZIP renomeado, que passaria em todos os testes menos no player |
 
 Decisões novas devem ser acrescentadas aqui e detalhadas em `notes/decisoes.md`.
 
@@ -292,44 +293,52 @@ Decisões novas devem ser acrescentadas aqui e detalhadas em `notes/decisoes.md`
 
 ## 14. Estado atual
 
-Atualizado em: **04/08/2026**
+Atualizado em: **05/08/2026**
 
 | Item | Estado |
 |---|---|
 | Documentação base (CLAUDE.md / README.md) | concluído |
 | Estrutura de pastas | concluído |
-| `docker-compose.yml` | escrito, **não executado** |
-| Configuração do NGINX | escrita, **não executada** |
-| Scripts (`00`–`04`) | escritos, **não executados** |
-| `notes/` | criado |
-| Certificado autoassinado | não gerado |
-| MinIO | não iniciado |
-| Bucket `videos` | não criado |
-| Vídeo de teste | não baixado |
-| URL pré-assinada | não gerada |
-| Teste de acesso via proxy | não executado |
+| `docker-compose.yml` | **executado, funcionando** |
+| Configuração do NGINX | **executada, funcionando** |
+| Scripts (`00`–`04`) | executados; 4 bugs corrigidos (ver `notes/resultados.md`) |
+| Certificado autoassinado | gerado, válido até 07/11/2028 |
+| MinIO | rodando, `healthy`, sem porta publicada |
+| Bucket `videos` | criado, sem acesso anônimo |
+| Vídeo de teste | enviado (62 MiB) — ver pendência sobre `.zip` |
+| URL pré-assinada | gerada com host do proxy |
+| Acesso ao vídeo via proxy | **validado** (`200` no GET, `206` no Range, íntegro) |
+| Expiração da URL | não testada |
+| Reprodução em player real | não confirmada |
 
-Nada foi executado ainda: a máquina de desenvolvimento tem Docker, mas a base
-foi escrita e validada apenas estaticamente (YAML, `bash -n`, `shellcheck`,
-substituição do template). A primeira execução real é o próximo passo.
+**A premissa central da seção 3 está validada.** A URL pré-assinada nasce com o
+host do proxy, atravessa o NGINX com o `Host` preservado e o MinIO aceita a
+assinatura. O download bateu byte a byte com o arquivo original e o `Range`
+devolve `206 Partial Content`. O MinIO não é alcançável de fora.
 
 ---
 
 ## 15. Pendências
 
-1. rodar `cp .env.example .env` e revisar as credenciais;
-2. adicionar `127.0.0.1  videos.lab.local` ao arquivo de hosts;
-3. executar `scripts/00-setup-certs.sh` até `04-test-access.sh`;
-4. validar `nginx -t` e o healthcheck do MinIO na primeira subida;
-5. confirmar o `206 Partial Content` e o seek em um player real;
-6. testar a expiração com `PRESIGN_EXPIRY=30s` (esperado `403`);
-7. registrar evidências em `notes/resultados.md`;
-8. atualizar as seções 14, 16 e 18 com o resultado real;
-9. reavaliar a exposição do console do MinIO (decisão 14).
+1. refazer o vídeo de teste — era mesmo um ZIP, e o script `02` já foi corrigido:
+   `rm assets/video-teste.mp4 && bash scripts/02-upload-test-video.sh`;
+2. rodar novamente `bash scripts/04-test-access.sh` com os bugs corrigidos;
+3. testar a expiração: `CURTA="$(PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh)"`
+   e, após 35s, esperar `403`;
+4. abrir o vídeo em player real, confirmar o seek e capturar print;
+5. repetir o ciclo após `docker compose down -v` para fechar o critério 7;
+6. atualizar as seções 14 e 18 com o resultado final;
+7. reavaliar a exposição do console do MinIO (decisão 14).
 
 ---
 
 ## 16. Diário de execução
+
+### 05/08/2026 — primeira execução real
+- **O que foi feito:** fluxo completo `00`→`04` em WSL2 + Docker Desktop, mais a bateria manual de validação (certificado, testes negativos, integridade, `Range`).
+- **Resultado:** **a premissa central está validada.** URL assinada com `videos.lab.local:8443`, `Host` preservado ponta a ponta (log do NGINX confirma), `200` no GET, `206` com `Content-Range: bytes 0-1023/64657225`, download byte a byte idêntico ao original. MinIO inalcançável de fora (`docker compose port minio 9000` → `invalid IP:0`). Assinatura efetivamente verificada: sem query string e com assinatura adulterada, ambos `403`.
+- **Problemas encontrados:** quatro bugs, **todos nos scripts de teste, nenhum na configuração**. (B1) `curl -I` devolvia `403 SignatureDoesNotMatch` porque a assinatura SigV4 cobre o método HTTP e `mc share download` assina para `GET` — `HEAD` nunca valida; o teste é que estava errado. (B2) `esperado=000 obtido=000000`: o `|| echo 000` duplicava o `000` que o próprio `curl -w` já imprime em falha de conexão. (B3) `PRESIGN_EXPIRY=30s` na linha de comando era ignorado porque `set -a; . ./.env` sobrescrevia o ambiente do caller. (B4) `grep`/`sed` não existem na imagem `minio/mc`. Detalhes em `notes/resultados.md`.
+- **Próximo passo:** confirmar que o vídeo de teste é MP4 e não ZIP, testar a expiração e validar o seek em player real.
 
 ### 04/08/2026 — base executável
 - **O que foi feito:** criados `docker-compose.yml`, configuração do NGINX (template + snippet), `.env.example`, `.gitignore`, os cinco scripts e os arquivos de `notes/`.
@@ -394,19 +403,16 @@ Ao iniciar uma sessão, ler as seções 3 (ponto técnico central), 13 (decisõe
 
 ## 20. Próximo passo sugerido
 
-Executar o laboratório pela primeira vez. A base já está escrita e validada
-estaticamente; falta rodá-la:
+O fluxo principal já está validado. Falta fechar os critérios pendentes:
 
 ```bash
-cp .env.example .env
-# adicionar ao arquivo de hosts:  127.0.0.1  videos.lab.local
-bash scripts/00-setup-certs.sh
-docker compose up -d
-bash scripts/01-create-bucket.sh
-bash scripts/02-upload-test-video.sh
-bash scripts/04-test-access.sh
+rm assets/video-teste.mp4          # o arquivo antigo era um ZIP
+bash scripts/02-upload-test-video.sh   # agora extrai o MP4 e valida o 'ftyp'
+bash scripts/04-test-access.sh     # placar completo, agora com 8 checagens
+
+CURTA="$(PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh)"
+sleep 35 && curl -sk -o /dev/null -w '%{http_code}\n' "$CURTA"   # esperado: 403
 ```
 
-O primeiro erro provável é `SignatureDoesNotMatch`. Se aparecer, comparar o
-`Host` registrado no log do NGINX (`log_format lab`) com o host presente na URL
-gerada — a seção 3 explica por que os dois precisam ser idênticos.
+Depois, abrir o vídeo em player real para confirmar o seek, e repetir o ciclo
+a partir de `docker compose down -v` para fechar o critério de reprodutibilidade.
