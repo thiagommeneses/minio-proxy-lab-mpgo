@@ -18,10 +18,26 @@ die()  { printf '\033[0;31mERRO\033[0m %s\n' "$*" >&2; exit 1; }
 # --- ambiente --------------------------------------------------------------
 [ -f .env ] || die ".env não encontrado. Rode primeiro: cp .env.example .env"
 
-set -a
-# shellcheck disable=SC1091
-. ./.env
-set +a
+# Carrega o .env SEM sobrescrever variáveis já presentes no ambiente.
+# É o que permite sobrepor um valor pontualmente na linha de comando:
+#   PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh
+# Um 'set -a; . ./.env' faria o arquivo vencer da variável passada pelo caller.
+while IFS= read -r _line || [ -n "$_line" ]; do
+    _line="${_line#"${_line%%[![:space:]]*}"}"          # trim à esquerda
+    case "$_line" in ''|'#'*) continue ;; esac
+    case "$_line" in *=*) ;; *) continue ;; esac
+
+    _key="${_line%%=*}"
+    _val="${_line#*=}"
+    _key="${_key//[[:space:]]/}"
+    case "$_key" in [A-Za-z_]*) ;; *) continue ;; esac
+
+    _val="${_val%\"}"; _val="${_val#\"}"                # aspas opcionais
+    _val="${_val%\'}"; _val="${_val#\'}"
+
+    [ -n "${!_key:-}" ] || export "${_key}=${_val}"
+done < .env
+unset _line _key _val
 
 for var in MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BUCKET TEST_OBJECT \
            PUBLIC_HOST PUBLIC_SCHEME NGINX_HTTP_PORT NGINX_HTTPS_PORT \
