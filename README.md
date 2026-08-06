@@ -55,8 +55,8 @@ docker compose up -d --build
 
 O `.env` fica de fora do git, então senhas nunca vão para o repositório.
 
-Instale `certs/ca-boa.crt` como confiável no Windows, conforme o script indica,
-e reinicie o navegador. **Não instale a `ca-ruim.crt`** — ela precisa continuar
+Instale `certs/ca-publica.crt` como confiável no Windows, conforme o script indica,
+e reinicie o navegador. **Não instale a `ca-interna.crt`** — ela precisa continuar
 não confiável para a demonstração fazer sentido.
 
 O primeiro start baixa o vídeo de teste e leva cerca de um minuto.
