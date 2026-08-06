@@ -12,15 +12,46 @@ Laboratório que simula o acesso a vídeos armazenados no **MinIO** através de 
 Validar, de forma simples e reproduzível, o seguinte fluxo:
 
 1. o vídeo é enviado para o MinIO;
-2. o MinIO gera uma URL pré-assinada **já com o hostname do proxy**;
+2. a aplicação gera uma URL pré-assinada **já com o hostname público do proxy**;
 3. o acesso ao vídeo ocorre pelo proxy reverso, com o certificado do proxy;
 4. o usuário final nunca alcança o MinIO diretamente.
 
 ```text
-[cliente] --HTTPS--> [NGINX :8443]  --HTTP--> [MinIO :9000]
-              ^                                    ^
-     certificado do proxy              rede interna do compose,
-     hostname público                  sem porta publicada no host
+                    intranet.lab.local:8443
+                  ┌──────────────────────────┐
+[navegador] ──────┤ /themisia/  -> app       │
+                  │ /memoriais/ -> MinIO     ├──HTTPS──> [MinIO :9000]
+                  └──────────────────────────┘            vm-lnx-0369.lab.local
+                    certificado da ca-publica              cert da ca-interna
+                    (confiável no navegador)               (NÃO confiável)
+```
+
+Aplicação e mídia no **mesmo host**, separadas por caminho. O primeiro segmento
+do caminho de mídia é o **nome do bucket** — a assinatura SigV4 cobre o caminho,
+então o proxy não pode reescrevê-lo.
+
+## A aplicação de simulação
+
+`https://intranet.lab.local:8443/themisia/` sobe um ThemísIA mínimo (FastAPI +
+HTMX) com duas abas. A aba **MemorIAis** mostra dois players lado a lado:
+
+| Player | Aponta para | Resultado esperado |
+|---|---|---|
+| Caminho atual | `vm-lnx-0369.lab.local:9000` | falha — certificado não confiável |
+| Caminho proposto | `intranet.lab.local:8443/memoriais/` | vídeo reproduz |
+
+Isso existe porque **erro de certificado dentro de um `<video>` falha em
+silêncio**: não há "Avançado → prosseguir" como na navegação de topo, o player
+simplesmente não toca. É o que torna o problema difícil de diagnosticar e o que
+nenhum teste com `curl -k` detecta.
+
+Para o player quebrado ser alcançável, o MinIO precisa estar exposto — que é o
+estado atual de produção e justamente o que a PoC quer eliminar. Por isso fica
+sob profile:
+
+```bash
+docker compose --profile demo up -d      # liga o caminho quebrado
+docker compose --profile demo down       # desliga
 ```
 
 ---
@@ -45,7 +76,8 @@ No laboratório isso é resolvido com a variável `MINIO_SERVER_URL` no containe
 - MinIO Client (`mc`) para bucket, upload e geração de URL
 - NGINX como proxy reverso
 - Bash para os scripts auxiliares
-- OpenSSL para o certificado autoassinado
+- FastAPI + HTMX para a aplicação de simulação
+- OpenSSL para a PKI do laboratório
 
 ---
 
@@ -54,19 +86,61 @@ No laboratório isso é resolvido com a variável `MINIO_SERVER_URL` no containe
 - Docker instalado e em execução;
 - Docker Compose v2 (`docker compose`, sem hífen);
 - acesso ao terminal (no Windows, recomenda-se WSL2);
-- um vídeo de teste em `assets/video-teste.mp4`;
-- OpenSSL disponível (para gerar o certificado).
+- OpenSSL disponível (para gerar a PKI).
 
-### Hostname de teste
+### Hostnames de teste
 
-Adicione ao arquivo de hosts da máquina:
+Adicione ao arquivo de hosts da máquina **as duas entradas**:
 
 ```text
-127.0.0.1  videos.lab.local
+127.0.0.1  intranet.lab.local
+127.0.0.1  vm-lnx-0369.lab.local
 ```
 
 - **Linux/WSL:** `/etc/hosts`
 - **Windows:** `C:\Windows\System32\drivers\etc\hosts` (abrir como administrador)
+
+`intranet.lab.local` simula `intranet.mpgo.mp.br` (aplicação + mídia).
+`vm-lnx-0369.lab.local` simula o servidor MinIO, usado na demonstração do
+caminho quebrado.
+
+### Confiar na CA "pública" do laboratório
+
+O laboratório gera **duas** CAs, para reproduzir a assimetria de produção: o
+navegador confia no certificado da aplicação (curinga `*.mpgo.mp.br`, GlobalSign)
+e não confia no do MinIO (Certificadora TLS do MP-GO, interna).
+
+Depois de rodar `scripts/00-setup-certs.sh`, é preciso confiar **apenas** na
+`ca-publica.crt`. A `ca-interna.crt` tem que continuar não confiável — é ela
+que reproduz a falha atual.
+
+**Opção recomendada — `mkcert` no Windows.** O script detecta e usa
+automaticamente, e o `mkcert` instala a CA em todos os truststores, inclusive o
+do Firefox:
+
+```powershell
+winget install FiloSottile.mkcert     # ou: choco install mkcert
+mkcert -install
+```
+
+Depois rode `bash scripts/00-setup-certs.sh --force`. Nada mais a fazer.
+
+> O `mkcert` precisa estar instalado **no Windows**, não no WSL. Rodado dentro
+> do WSL, ele instala a CA no truststore do Linux, e o navegador é o do Windows.
+> O script detecta esse caso e avisa. Para forçar o openssl: `USE_MKCERT=0`.
+
+**Sem `mkcert`** — o script gera a CA com openssl e você instala manualmente:
+
+```powershell
+# PowerShell como administrador, na pasta do projeto
+Import-Certificate -FilePath .\nginx\certs\ca-publica.crt `
+  -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+Isso cobre Chrome e Edge. O **Firefox usa truststore próprio** e ignora o do
+Windows: Configurações → Privacidade e Segurança → Certificados → Ver
+certificados → Autoridades → Importar → `nginx/certs/ca-publica.crt`, marcando
+"Confiar nesta CA para identificar sites".
 
 ---
 
@@ -80,9 +154,15 @@ minio-proxy-lab-mpgo/
 ├── .env.example
 ├── .env                       # local, não versionar
 ├── .gitignore
+├── app/                       # ThemísIA/MemorIAis simulado (FastAPI + HTMX)
+│   ├── main.py
+│   ├── requirements.txt
+│   └── Dockerfile
 ├── nginx/
-│   ├── nginx.conf             # config única: server HTTP + server HTTPS
-│   └── certs/                 # gerado por scripts/00
+│   ├── nginx.conf             # server HTTP + HTTPS, roteamento por caminho
+│   ├── conf.d/
+│   │   └── minio-proxy.inc    # regras de proxy para o MinIO
+│   └── certs/                 # 2 CAs + 2 certificados, gerados por scripts/00
 ├── policies/
 │   └── presign-readonly.json  # gerada por scripts/01
 ├── scripts/
@@ -96,10 +176,9 @@ minio-proxy-lab-mpgo/
 ├── assets/
 │   └── video-teste.mp4        # baixado por scripts/02
 └── notes/
-    ├── contexto.md
-    ├── decisoes.md
-    ├── execucao.md
-    └── resultados.md
+    ├── contexto.md  decisoes.md  execucao.md
+    ├── resultados.md
+    └── producao.md            # migração para o ambiente real
 ```
 
 ---
@@ -112,30 +191,15 @@ minio-proxy-lab-mpgo/
 cp .env.example .env
 ```
 
-Conteúdo esperado:
+O `.env.example` vem comentado, explicando cada escolha. Os valores que mais
+importam:
 
 ```env
-# Credenciais do MinIO
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=minioadmin123
-
-# Bucket e objeto de teste
-MINIO_BUCKET=videos
-TEST_OBJECT=video-teste.mp4
-
-# Hostname público do proxy (usado para assinar as URLs)
-PUBLIC_HOST=videos.lab.local
-PUBLIC_SCHEME=https
-
-# Portas do NGINX (iguais dentro e fora do container — ver nota abaixo)
-NGINX_HTTP_PORT=8080
-NGINX_HTTPS_PORT=8443
-
-# Expiração padrão da URL pré-assinada
-PRESIGN_EXPIRY=1h
-
-# Vídeo de teste, baixado pelo script 02 se assets/video-teste.mp4 não existir
-TEST_VIDEO_URL=https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4
+PUBLIC_HOST=intranet.lab.local        # simula intranet.mpgo.mp.br
+MINIO_DIRECT_HOST=vm-lnx-0369.lab.local
+MINIO_BUCKET=memoriais                # = primeiro segmento do caminho da mídia
+TEST_OBJECT=019fb8eb-.../DEPOIMENTO/019fb8eb-....mp4
+PRESIGN_EXPIRY=24h
 ```
 
 > Altere as credenciais antes de qualquer uso fora do laboratório.
@@ -152,13 +216,14 @@ As portas aparecem em dois lugares: no `.env` e no `listen` de `nginx/nginx.conf
 e abortam com mensagem explícita se divergirem — o mesmo vale para
 `PUBLIC_HOST` e `server_name`.
 
-### 2. Gerar o certificado autoassinado
+### 2. Gerar os certificados
 
 ```bash
 bash scripts/00-setup-certs.sh
 ```
 
-Gera `nginx/certs/server.crt` e `nginx/certs/server.key` para `videos.lab.local`.
+Gera as duas CAs e os dois certificados. Depois disso, instale a
+`ca-publica.crt` conforme os pré-requisitos.
 
 ### 3. Subir os serviços
 
@@ -166,7 +231,7 @@ Gera `nginx/certs/server.crt` e `nginx/certs/server.key` para `videos.lab.local`
 bash scripts/up.sh
 ```
 
-Sobem dois serviços: `minio` (sem portas publicadas) e `nginx` (portas `8080` e `8443`).
+Sobem três serviços: `minio` (sem portas publicadas), `nginx` (`8080` e `8443`) e `app`.
 
 Use `scripts/up.sh` em vez de `docker compose up -d` direto: ele confere se as
 portas e o hostname do `.env` batem com o `nginx/nginx.conf` antes de subir.
@@ -226,7 +291,7 @@ bash scripts/03-generate-presigned-url.sh
 A saída deve ser uma URL parecida com:
 
 ```text
-https://videos.lab.local:8443/videos/video-teste.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Expires=3600&X-Amz-Signature=...
+https://intranet.lab.local:8443/videos/video-teste.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Expires=3600&X-Amz-Signature=...
 ```
 
 Confirme que o host é o do **proxy** e não o do MinIO. Esse é o ponto principal da PoC.
@@ -279,9 +344,9 @@ sleep 35 && curl -sk -o /dev/null -w '%{http_code}\n' "$CURTA"   # esperado: 403
 |---|---|---|
 | Vídeo reproduz | abrir a URL no navegador | vídeo toca sem erro |
 | Sem vazamento interno | `04-test-access.sh` grupo 7 | sem redirect, sem `minio:9000` |
-| Acesso pelo proxy | ver a barra de endereço / `curl -I` | host `videos.lab.local:8443` |
-| MinIO não exposto | `curl http://localhost:9000` | conexão recusada |
-| Certificado do proxy | inspecionar o cadeado no navegador | certificado de `videos.lab.local` |
+| Acesso pelo proxy | ver a barra de endereço / `curl -I` | host `intranet.lab.local:8443` |
+| MinIO não exposto | `curl http://localhost:9000` | conexão recusada (com o profile `demo` desligado) |
+| Certificado do proxy | inspecionar o cadeado no navegador | emitido pela ca-publica, para `intranet.lab.local` |
 | Seek funciona | `curl -k -r 0-1023 ... -w '%{http_code}'` | `206` |
 | URL expira | aguardar `PRESIGN_EXPIRY` e repetir | `403` |
 | Reprodutível | `docker compose down -v` e refazer tudo | mesmo resultado |
@@ -311,8 +376,11 @@ diferente do usado na assinatura.
 
 - confirme `proxy_set_header Host $http_host;` em `nginx/nginx.conf`;
 - confirme que `NGINX_HTTPS_PORT` no `.env` é igual ao `listen ... ssl` do `nginx.conf`;
-- confirme que `MINIO_SERVER_URL` inclui esquema, host **e porta** (`https://videos.lab.local:8443`);
-- confirme que o NGINX não está reescrevendo o path.
+- confirme que `MINIO_SERVER_URL` inclui esquema, host **e porta** (`https://intranet.lab.local:8443`);
+- confirme que o NGINX não está reescrevendo o path — nem no `location`
+  `/memoriais/`, nem com `proxy_pass` terminado em barra;
+- confirme que o bucket se chama exatamente igual ao primeiro segmento do
+  caminho (`memoriais`).
 
 ### `403 Forbidden` logo após gerar a URL
 
@@ -352,10 +420,10 @@ bash scripts/01-create-bucket.sh   # regenera a policy com o bucket atual
 
 ### Erro de TLS no `mc` ao gerar a URL
 
-O `mc` valida o certificado do proxy usando `nginx/certs/server.crt`, montado
-como CA no container. Se você regerou o certificado (`00-setup-certs.sh --force`),
-recrie o container: `docker compose up -d --force-recreate`. Como último
-recurso, `MC_INSECURE=1` no `.env` desliga a validação.
+O `mc` valida os certificados usando as duas CAs do laboratório, montadas no
+container. Se você regerou a PKI (`00-setup-certs.sh --force`), recrie os
+containers: `docker compose up -d --force-recreate`. Como último recurso,
+`MC_INSECURE=1` no `.env` desliga a validação.
 
 ### Bucket não encontrado
 
@@ -370,19 +438,20 @@ Confirme se o bucket foi criado e se o nome bate entre `.env`, scripts e a URL.
 
 ### Aviso de certificado no navegador (`NET::ERR_CERT_AUTHORITY_INVALID`)
 
-Esperado com certificado autoassinado, e **não invalida o critério de sucesso**:
-o certificado apresentado é o do proxy, que é justamente o que se quer provar.
-Clique em "Avançado" → "Continue até videos.lab.local".
+Depende de qual host apresentou o aviso.
 
-Para navegar sem o aviso, instale o certificado como confiável no Windows:
+Em **`intranet.lab.local`** significa que a `ca-publica.crt` não foi instalada.
+Instale conforme os pré-requisitos e reinicie o navegador:
 
 ```powershell
-# PowerShell como administrador, a partir da pasta do projeto
-Import-Certificate -FilePath .\nginx\certs\server.crt `
+Import-Certificate -FilePath .\nginx\certs\ca-publica.crt `
   -CertStoreLocation Cert:\LocalMachine\Root
 ```
 
-Depois reinicie o navegador. Em `curl`, continue usando `-k`.
+Em **`vm-lnx-0369.lab.local`** o aviso é esperado e desejado: é o certificado da
+CA interna, que reproduz exatamente a falha atual de produção. Não instale essa CA.
+
+Em `curl`, continue usando `-k`.
 
 ### O vídeo não reproduz, mas o download bate byte a byte
 
@@ -408,7 +477,7 @@ O script agora recusa fazer upload de qualquer arquivo que não tenha o box
 Já tratado com `client_max_body_size 0;` no snippet — só relevante se o upload
 também passar pelo proxy.
 
-### `videos.lab.local` não resolve
+### `intranet.lab.local` não resolve
 
 Falta a entrada no arquivo de hosts (ver Pré-requisitos). Os scripts que dependem
 disso falham com a instrução na mensagem de erro.

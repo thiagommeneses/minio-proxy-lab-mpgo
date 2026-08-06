@@ -1,7 +1,91 @@
 # Migração para produção — MP-GO
 
-Documento de trabalho. Consolida o que muda entre o laboratório e o ambiente
-real, a partir do certificado em uso hoje no servidor MinIO.
+Documento de trabalho. Consolida o que muda entre o laboratório e o ambiente real.
+
+---
+
+## 0. Situação atual e decisão de formato
+
+### O que acontece hoje
+
+O ThemísIA roda em `https://intranet.mpgo.mp.br/themisia/`, com certificado
+confiável. O MemorIAis é um módulo dentro dele, e o player consome a
+`presigned_url` devolvida na **listagem** dos artefatos.
+
+Essa URL aponta direto para o MinIO:
+
+```text
+https://vm-lnx-0369:9000/memoriais/<uuid>/DEPOIMENTO/<uuid>.mp4
+  ?X-Amz-Credential=minioadmin%2F...&X-Amz-Expires=28800&...
+```
+
+O GET da mídia **não passa pelo ThemísIA**: o navegador fala direto com o MinIO.
+Como o certificado do MinIO vem da CA interna, o navegador bloqueia — e bloqueia
+em silêncio, porque dentro de um `<video>` não existe "Avançado → prosseguir".
+
+Três coisas que essa URL revela, além do problema principal:
+
+1. o host é `vm-lnx-0369`, nome curto, enquanto o certificado cobre
+   `vm-lnx-0369.intranet.mpgo`. Nem entre servidores esse nome valida — a
+   verificação TLS está desligada no backend;
+2. `X-Amz-Credential=minioadmin`: as URLs são assinadas com o **root do MinIO**,
+   e esse access key vai para o navegador de todo usuário que abre um vídeo;
+3. `X-Amz-Expires=28800` — 8 horas.
+
+### Certificado do ThemísIA
+
+| Campo | Valor |
+|---|---|
+| Subject | `CN = *.mpgo.mp.br` |
+| SAN | `DNS:*.mpgo.mp.br`, `DNS:mpgo.mp.br` |
+| Emissor | GlobalSign GCC R3 DV TLS CA 2020 (**CA pública**) |
+| Validade | 10/07/2026 a **25/01/2027** |
+
+Por ser de CA pública, qualquer navegador confia — inclusive celular e máquina
+fora do domínio. E o curinga cobre um nível: `intranet.mpgo.mp.br` está coberto,
+`videos.mpgo.mp.br` também, mas `videos.intranet.mpgo.mp.br` **não**.
+
+### Restrição que define o formato da URL
+
+A assinatura SigV4 cobre o **caminho**, não só o `Host`. O MinIO recalcula a
+assinatura a partir do caminho que recebe, e lê esse caminho como
+`/<bucket>/<chave>`. Consequências:
+
+- o proxy **não pode reescrever o path** — nem acrescentar nem remover prefixo;
+- não existe "prefixo livre": **o primeiro segmento do caminho É o bucket**;
+- não há configuração de "path base" no MinIO.
+
+### Decisão: formato A
+
+```text
+https://intranet.mpgo.mp.br/themisia/    -> aplicação
+https://intranet.mpgo.mp.br/memoriais/…  -> objetos do bucket "memoriais"
+```
+
+**Por quê:** o bucket já se chama `memoriais`, então não há migração de objetos
+nem rewrite. Não exige certificado novo (o curinga já cobre `intranet.mpgo.mp.br`)
+nem registro DNS. A mudança no backend é apenas o endpoint usado para assinar.
+
+**Custo aceito:** `/memoriais/` passa a ser um caminho reservado na raiz da
+intranet, e a rota de vídeo fica acoplada à configuração do NGINX do ThemísIA.
+
+Alternativas descartadas:
+
+| Opção | Motivo |
+|---|---|
+| `/themisia/videos/…` | exigiria renomear o bucket para `themisia` e migrar as chaves para o prefixo `videos/` |
+| `videos.mpgo.mp.br` | mais limpo e sem colisão, mas exige registro DNS novo |
+
+**Atenção à porta:** em `443` o header `Host` **não inclui a porta**.
+
+```bash
+MINIO_SERVER_URL=https://intranet.mpgo.mp.br      # correto
+MINIO_SERVER_URL=https://intranet.mpgo.mp.br:443  # quebra a assinatura
+```
+
+No laboratório a porta aparece (`:8443`) porque não é a padrão do esquema. Essa
+diferença é a forma mais provável de reproduzir `SignatureDoesNotMatch` na
+migração.
 
 ---
 
@@ -43,12 +127,11 @@ para os links já emitidos. O que invalidaria seria mudar o hostname ou a porta.
 
 ---
 
-## 2. Decisão pendente: hostname público
+## 2. Hostname público — DECIDIDO (formato A, ver seção 0)
 
-É a decisão que determina todo o resto, porque **o hostname entra na assinatura**.
-Ele precisa ser fixado antes de gerar qualquer URL em produção.
+Mantido abaixo o comparativo que levou à decisão.
 
-### Opção A — nome de serviço dedicado (recomendada)
+### Opção descartada — nome de serviço dedicado
 
 Exemplo: `videos.intranet.mpgo.mp.br`
 
@@ -63,7 +146,7 @@ Configuração correspondente:
 MINIO_SERVER_URL=https://videos.intranet.mpgo.mp.br
 ```
 
-### Opção B — reaproveitar `vm-lnx-0369.intranet.mpgo`
+### Opção descartada — reaproveitar `vm-lnx-0369.intranet.mpgo`
 
 - não exige pedir certificado novo (mas o atual vence em setembro/2026 mesmo assim);
 - a URL do vídeo passa a revelar o nome da máquina;
@@ -169,8 +252,8 @@ reescrito) ou falha de validação TLS (se o SNI for o nome público).
 ## 5. Checklist de migração
 
 - [ ] renovar o certificado de `vm-lnx-0369.intranet.mpgo` (vence 02/09/2026)
-- [ ] definir o hostname público (opção A ou B da seção 2)
-- [ ] se opção A: solicitar certificado e registro DNS
+- [x] definir o hostname público — formato A, `intranet.mpgo.mp.br/memoriais/`
+- [ ] confirmar que `/memoriais/` não colide com rota existente na raiz da intranet
 - [ ] obter o certificado da CA para o `proxy_ssl_trusted_certificate`
 - [ ] instalar o par de chaves no MinIO e habilitar TLS
 - [ ] configurar `MINIO_SERVER_URL` com o nome público **sem porta**

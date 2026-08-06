@@ -55,7 +55,7 @@ como premissa de projeto:
 Consequências práticas:
 
 - A URL pré-assinada precisa ser **gerada já com o endpoint do proxy**
-  (ex.: `https://videos.lab.local`), não com o endereço do MinIO.
+  (ex.: `https://intranet.lab.local`), não com o endereço do MinIO.
   Trocar o host da URL depois de assinada invalida a assinatura (`SignatureDoesNotMatch`).
 - O NGINX precisa **repassar o `Host` original** para o MinIO
   (`proxy_set_header Host $http_host;`). Se o proxy reescrever o Host para
@@ -117,9 +117,11 @@ que seria feito em produção.
 
 | Serviço | Papel | Exposto ao host |
 |---|---|---|
-| `minio` | storage S3 | **não** (apenas rede interna do compose) |
-| `nginx` | proxy reverso / TLS | sim (`8080` HTTP, `8443` HTTPS) |
-| `mc` | client auxiliar (bucket + upload + presign) | não (container efêmero) |
+| `minio` | storage S3, com TLS da `ca-interna` | **não** (apenas rede interna do compose) |
+| `nginx` | proxy reverso / TLS de borda / roteamento por caminho | sim (`8080` HTTP, `8443` HTTPS) |
+| `app` | ThemísIA/MemorIAis simulado (FastAPI + HTMX) | não (só através do proxy) |
+| `minio-exposto` | socat que torna o MinIO alcançável, para demonstrar o caminho quebrado | só com `--profile demo` |
+| `mc` | client auxiliar (bucket + usuário + upload + presign) | não (container efêmero) |
 
 Manter o MinIO **sem publicar portas no host** é parte do teste: prova que o
 único caminho até o objeto é o proxy.
@@ -136,9 +138,15 @@ minio-proxy-lab-mpgo/
 ├── .env.example
 ├── .env                       # local, não versionar
 ├── .gitignore
+├── app/                       # ThemísIA/MemorIAis simulado
+│   ├── main.py
+│   ├── requirements.txt
+│   └── Dockerfile
 ├── nginx/
-│   ├── nginx.conf             # config única: server HTTP + server HTTPS
-│   └── certs/                 # gerado localmente, não versionar
+│   ├── nginx.conf             # server HTTP + HTTPS, roteamento por caminho
+│   ├── conf.d/
+│   │   └── minio-proxy.inc    # regras de proxy para o MinIO
+│   └── certs/                 # 2 CAs + 2 certificados, não versionar
 ├── policies/
 │   └── presign-readonly.json  # gerada por scripts/01, não versionar
 ├── scripts/
@@ -153,10 +161,9 @@ minio-proxy-lab-mpgo/
 ├── assets/
 │   └── video-teste.mp4        # baixado pelo script 02, não versionar
 └── notes/
-    ├── contexto.md
-    ├── decisoes.md
-    ├── execucao.md
-    └── resultados.md
+    ├── contexto.md  decisoes.md  execucao.md
+    ├── resultados.md
+    └── producao.md            # migração para o ambiente real
 ```
 
 ---
@@ -171,11 +178,19 @@ minio-proxy-lab-mpgo/
 6. o MinIO não é alcançável diretamente pelo cliente final.
 
 ```text
-[cliente] --HTTPS--> [NGINX :8443]  --HTTP--> [MinIO :9000]
-              ^                                    ^
-     certificado do proxy              rede interna do compose,
-     hostname público                  sem porta publicada no host
+                    intranet.lab.local:8443
+                  ┌──────────────────────────┐
+[navegador] ──────┤ /themisia/  -> app       │
+                  │ /memoriais/ -> MinIO     ├──HTTPS──> [MinIO :9000]
+                  └──────────────────────────┘            vm-lnx-0369.lab.local
+                    cert da ca-publica                    cert da ca-interna
+                    (confiável)                           (NÃO confiável)
 ```
+
+Aplicação e mídia no **mesmo host**, separadas por caminho — formato decidido
+para produção (`intranet.mpgo.mp.br/themisia/` e `intranet.mpgo.mp.br/memoriais/`).
+O primeiro segmento do caminho de mídia é o **nome do bucket**: como a assinatura
+SigV4 cobre o caminho, o proxy não pode reescrevê-lo.
 
 ---
 
@@ -284,11 +299,11 @@ O laboratório é considerado bem-sucedido quando:
 | 4 | Exposição do MinIO | sem publicar portas no host | prova que o único caminho é o proxy |
 | 5 | Console do MinIO | acessível apenas via proxy, em rota separada | evita segundo ponto de exposição |
 | 6 | Papel do proxy | encaminhamento puro, sem reescrita de path | reescrita quebraria a assinatura SigV4 |
-| 7 | Hostname de teste | `videos.lab.local` via `hosts` | reproduz nome público sem depender de DNS |
-| 8 | Certificado | autoassinado local | suficiente para validar o caminho TLS |
+| 7 | Hostname de teste | `intranet.lab.local` via `hosts` | simula `intranet.mpgo.mp.br` sem depender de DNS |
+| 8 | Certificado | duas CAs de laboratório | reproduz a assimetria de produção: navegador confia no proxy (GlobalSign) e não no MinIO (CA interna do MP-GO) |
 | 9 | Geração da URL | `mc` com alias apontando para o proxy | equivale ao que a aplicação faria |
 | 10 | Portas do NGINX | iguais dentro e fora do container (`8443:8443`) | porta faz parte do `Host` assinado; divergir quebra a assinatura |
-| 11 | Resolução do hostname | `videos.lab.local` como alias de rede do NGINX | o container `mc` precisa resolver o mesmo nome que o navegador usa |
+| 11 | Resolução do hostname | `intranet.lab.local` como alias de rede do NGINX | o container `mc` precisa resolver o mesmo nome que o navegador usa |
 | 12 | Aliases do `mc` | `lab` (admin, direto) e `proxy` (somente presign) | tarefas administrativas não devem depender do proxy |
 | 13 | Config do NGINX | arquivo único `nginx/nginx.conf`, portas fixas | legibilidade acima de DRY; a duplicação entre `.env` e `nginx.conf` é coberta por checagem automática em `common.sh` |
 | 14 | Console do MinIO | adiado para depois da validação do vídeo | WebSocket e redirect adicionam risco sem ajudar a premissa central |
@@ -299,6 +314,11 @@ O laboratório é considerado bem-sucedido quando:
 | 19 | Proteção contra abuso | `limit_conn` por IP, sem `limit_rate` nem `limit_req` | `limit_req` quebraria a rajada legítima de `Range` do seek; `limit_rate` exigiria conhecer o bitrate e travaria vídeos longos |
 | 20 | TLS no `mc` | certificado do proxy montado como CA no container | desligar a validação justamente no componente que assina as URLs esconderia um MITM nesse caminho |
 | 21 | Subida do ambiente | via `scripts/up.sh` | garante que a checagem `.env` × `nginx.conf` rode antes do `docker compose up` |
+| 22 | Formato da URL pública | caminho no mesmo host: `/memoriais/<chave>` | a assinatura cobre o caminho, então o prefixo **é** o nome do bucket; não existe prefixo livre nem rewrite possível |
+| 23 | Aplicação de simulação | FastAPI + HTMX, duas abas, dois players | erro de certificado dentro de `<video>` falha em silêncio — nenhum teste com `curl` detecta, só um player real |
+| 24 | Exposição do MinIO na demo | sob profile `demo` (socat) | o caminho quebrado precisa do MinIO alcançável, que é o oposto do que a PoC defende; fica opt-in |
+| 25 | Perna proxy → MinIO | HTTPS validado contra a `ca-interna` | implementa no lab a decisão já tomada para produção |
+| 26 | Emissão do cert do proxy | `mkcert` se disponível, `openssl` como fallback | o `mkcert` instala a CA também no truststore do Firefox, que é separado do Windows; a `ca-interna` continua no openssl porque precisa permanecer não confiável |
 
 Decisões novas devem ser acrescentadas aqui e detalhadas em `notes/decisoes.md`.
 

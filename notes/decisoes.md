@@ -196,4 +196,35 @@ isso virar produção.
 
 ---
 
+## D11 — Duas CAs, com mkcert opcional para a metade confiável
+
+**Contexto:** o laboratório precisa que o navegador confie no certificado do
+proxy e **não** confie no do MinIO. É essa assimetria que reproduz a falha de
+produção (GlobalSign vs. Certificadora TLS do MP-GO). Com um autoassinado só,
+os dois caminhos falhariam e a comparação lado a lado não provaria nada.
+
+**Por que não usar mkcert para tudo:** o mkcert é construído em torno de uma CA
+que é sempre instalada como confiável. Ele não sabe emitir a metade que precisa
+continuar não confiável. Essa metade fica no openssl de qualquer forma.
+
+**Escolha:** híbrido com detecção automática.
+
+- certificado do proxy: mkcert se o binário existir, openssl como fallback;
+- `ca-interna` e certificado do MinIO: sempre openssl.
+
+**Motivo de aceitar o mkcert:** ele instala a CA em todos os truststores,
+incluindo o do **Firefox**, que é separado do Windows e não é alcançado por
+`Import-Certificate`. A instrução anterior falhava silenciosamente no Firefox.
+
+**Pegadinha do WSL:** `mkcert -install` rodado dentro do WSL instala no
+truststore do Linux, não no do Windows, e o navegador é o do Windows. O script
+distingue os dois casos pelo formato do `-CAROOT`: caminho Windows (`C:\...`)
+significa `mkcert.exe`, e é convertido com `wslpath` para poder ser lido. Caminho
+POSIX significa mkcert do WSL, e o script avisa que a instalação manual ainda é
+necessária.
+
+**Escotilha:** `USE_MKCERT=0` força o openssl.
+
+---
+
 <!-- Novas decisões abaixo, seguindo o mesmo formato. -->
