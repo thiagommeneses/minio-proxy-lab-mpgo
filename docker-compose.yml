@@ -3,9 +3,10 @@ name: minio-proxy-lab-mpgo
 services:
 
   # ---------------------------------------------------------------------------
-  # MinIO — storage S3.
-  # NÃO publica portas no host. É proposital: prova que o único caminho até o
-  # objeto é o proxy reverso. Ver CLAUDE.md, decisão #4.
+  # MinIO — storage S3, agora com TLS.
+  # O certificado vem da ca-interna, que simula a Certificadora TLS do MP-GO e
+  # NÃO é instalada no navegador. É essa desconfiança que reproduz a falha atual.
+  # Continua sem publicar portas: o único caminho até o objeto é o proxy.
   # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
@@ -15,28 +16,31 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      # Faz o MinIO se enxergar sob o hostname público do proxy.
-      # Precisa incluir esquema, host E porta.
+      # Hostname público do proxy. Inclui porta porque 8443 não é a padrão;
+      # em produção, com 443, vai SEM porta.
       MINIO_SERVER_URL: ${PUBLIC_SCHEME}://${PUBLIC_HOST}:${NGINX_HTTPS_PORT}
     volumes:
       - minio-data:/data
+      - ./nginx/certs/minio.crt:/root/.minio/certs/public.crt:ro
+      - ./nginx/certs/minio.key:/root/.minio/certs/private.key:ro
     networks:
-      - lab
+      lab:
+        aliases:
+          # Nome que consta no certificado do MinIO, usado pelo proxy no SNI
+          # e pelo player do caminho "quebrado".
+          - ${MINIO_DIRECT_HOST}
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      # --insecure porque a CA interna não está no truststore da imagem.
+      test: ["CMD", "mc", "ready", "--insecure", "local"]
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 10s
 
   # ---------------------------------------------------------------------------
-  # NGINX — proxy reverso e terminação TLS.
-  # Escuta nas MESMAS portas dentro e fora do container (8080/8443).
-  # As portas do .env precisam bater com o 'listen' de nginx/nginx.conf;
-  # scripts/lib/common.sh verifica isso e aborta se divergirem.
-  # Se as portas divergissem, o Host assinado pelo mc (de dentro da rede) seria
-  # diferente do Host enviado pelo navegador (de fora) e a assinatura SigV4
-  # quebraria com SignatureDoesNotMatch.
+  # NGINX — proxy reverso, TLS de borda e roteamento por caminho.
+  #   /themisia/  -> app
+  #   /memoriais/ -> MinIO  (o primeiro segmento É o bucket; sem rewrite)
   # ---------------------------------------------------------------------------
   nginx:
     image: nginx:alpine
@@ -47,19 +51,60 @@ services:
       - "${NGINX_HTTPS_PORT}:${NGINX_HTTPS_PORT}"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/certs:/etc/nginx/certs:ro
     networks:
       lab:
         aliases:
-          # Faz o hostname público resolver também DE DENTRO da rede do compose,
-          # para o container mc conseguir assinar a URL contra o proxy.
           - ${PUBLIC_HOST}
+    depends_on:
+      - minio
+      - app
+
+  # ---------------------------------------------------------------------------
+  # app — ThemísIA/MemorIAis simulado (FastAPI + HTMX).
+  # Gera as URLs pré-assinadas na listagem, como o sistema real.
+  # Assinar é cálculo local: este container não precisa alcançar o MinIO.
+  # ---------------------------------------------------------------------------
+  app:
+    build: ./app
+    container_name: mpl-app
+    restart: unless-stopped
+    environment:
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      TEST_OBJECT: ${TEST_OBJECT}
+      PUBLIC_HOST: ${PUBLIC_HOST}
+      NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT}
+      MINIO_DIRECT_HOST: ${MINIO_DIRECT_HOST}
+      MINIO_DIRECT_PORT: ${MINIO_DIRECT_PORT}
+      MINIO_PRESIGN_USER: ${MINIO_PRESIGN_USER}
+      MINIO_PRESIGN_PASSWORD: ${MINIO_PRESIGN_PASSWORD}
+      PRESIGN_EXPIRY_HOURS: ${PRESIGN_EXPIRY_HOURS}
+    networks:
+      - lab
+
+  # ---------------------------------------------------------------------------
+  # minio-exposto — encaminhador L4 que torna o MinIO alcançável pelo navegador,
+  # reproduzindo o estado ATUAL de produção. Fica sob profile porque expor o
+  # MinIO é justamente o que a PoC quer eliminar.
+  #   ligar:   docker compose --profile demo up -d
+  #   desligar: docker compose --profile demo down
+  # ---------------------------------------------------------------------------
+  minio-exposto:
+    image: alpine/socat:latest
+    container_name: mpl-minio-exposto
+    profiles:
+      - demo
+    command: TCP-LISTEN:9000,fork,reuseaddr TCP:minio:9000
+    ports:
+      - "${MINIO_DIRECT_PORT}:9000"
+    networks:
+      - lab
     depends_on:
       - minio
 
   # ---------------------------------------------------------------------------
   # mc — client auxiliar, efêmero. Usado apenas via `docker compose run`.
-  # O profile impede que suba junto com `docker compose up`.
   # ---------------------------------------------------------------------------
   mc:
     image: minio/mc:latest
@@ -76,13 +121,15 @@ services:
       PUBLIC_HOST: ${PUBLIC_HOST}
       PUBLIC_SCHEME: ${PUBLIC_SCHEME}
       NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT}
+      MINIO_DIRECT_HOST: ${MINIO_DIRECT_HOST}
       PRESIGN_EXPIRY: ${PRESIGN_EXPIRY}
     volumes:
       - ./assets:/assets:ro
       - ./policies:/policies:ro
-      # Certificado do proxy montado como CA confiável do mc. É o que permite
-      # gerar a URL pré-assinada sem --insecure, como a aplicação real faria.
-      - ./nginx/certs/server.crt:/root/.mc/certs/CAs/lab-proxy.crt:ro
+      # As duas CAs do laboratório, para o mc validar tanto o proxy quanto o
+      # MinIO em vez de usar --insecure.
+      - ./nginx/certs/ca-publica.crt:/root/.mc/certs/CAs/lab-ca-publica.crt:ro
+      - ./nginx/certs/ca-interna.crt:/root/.mc/certs/CAs/lab-ca-interna.crt:ro
     networks:
       - lab
     depends_on:

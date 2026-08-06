@@ -43,6 +43,7 @@ for var in MINIO_ROOT_USER MINIO_ROOT_PASSWORD \
            MINIO_PRESIGN_USER MINIO_PRESIGN_PASSWORD \
            MINIO_BUCKET TEST_OBJECT \
            PUBLIC_HOST PUBLIC_SCHEME NGINX_HTTP_PORT NGINX_HTTPS_PORT \
+           MINIO_DIRECT_HOST MINIO_DIRECT_PORT PRESIGN_EXPIRY_HOURS \
            PRESIGN_EXPIRY; do
     [ -n "${!var:-}" ] || die "variável $var ausente ou vazia no .env"
 done
@@ -86,7 +87,7 @@ export MC_TLS_FLAG
 # proxy = usuário dedicado somente-leitura, através do proxy. SÓ assina URLs.
 #         O access key deste alias fica visível no X-Amz-Credential da URL.
 # shellcheck disable=SC2016,SC2089
-MC_ALIAS_ADMIN='mc --no-color alias set lab http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null'
+MC_ALIAS_ADMIN='mc --no-color alias set lab https://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null'
 # shellcheck disable=SC2089
 MC_ALIAS_PROXY="mc --no-color $MC_TLS_FLAG alias set proxy \"\$PUBLIC_SCHEME://\$PUBLIC_HOST:\$NGINX_HTTPS_PORT\" \"\$MINIO_PRESIGN_USER\" \"\$MINIO_PRESIGN_PASSWORD\" >/dev/null"
 # shellcheck disable=SC2090

@@ -11,8 +11,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 need_docker
 
-[ -f nginx/certs/server.crt ] && [ -f nginx/certs/server.key ] \
-    || die "certificado ausente. Rode primeiro: bash scripts/00-setup-certs.sh"
+for f in proxy.crt proxy.key minio.crt minio.key ca-interna.crt ca-publica.crt; do
+    [ -f "nginx/certs/$f" ] || die "nginx/certs/$f ausente. Rode: bash scripts/00-setup-certs.sh"
+done
 
 ok ".env e nginx/nginx.conf conferem (portas $NGINX_HTTP_PORT/$NGINX_HTTPS_PORT, host $PUBLIC_HOST)"
 

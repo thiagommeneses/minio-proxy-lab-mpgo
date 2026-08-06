@@ -39,8 +39,9 @@ http_code() {
 }
 
 # ---------------------------------------------------------------------------
-info "1/8  proxy responde"
+info "1/8  proxy e aplicação respondem"
 check "NGINX no ar (HTTPS)" "200" "$(http_code -m 10 "$PUBLIC_ENDPOINT/healthz")"
+check "ThemísIA servido pelo proxy" "200" "$(http_code -m 15 "$PUBLIC_ENDPOINT/themisia/")"
 
 # ---------------------------------------------------------------------------
 info "2/8  MinIO não acessível diretamente pelo host"
