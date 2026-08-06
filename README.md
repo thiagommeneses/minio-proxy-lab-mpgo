@@ -101,8 +101,8 @@ Adicione ao arquivo de hosts da máquina **as duas entradas**:
 - **Windows:** `C:\Windows\System32\drivers\etc\hosts` (abrir como administrador)
 
 `intranet.lab.local` simula `intranet.mpgo.mp.br` (aplicação + mídia).
-`vm-lnx-0369.lab.local` simula o servidor MinIO, usado na demonstração do
-caminho quebrado.
+`vm-lnx-0369.lab.local` simula o servidor MinIO — usado pelo console e pela
+demonstração do caminho quebrado.
 
 ### Confiar na CA "pública" do laboratório
 
@@ -333,8 +333,33 @@ CURTA="$(PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh)"
 sleep 35 && curl -sk -o /dev/null -w '%{http_code}\n' "$CURTA"   # esperado: 403
 ```
 
-> **Escopo desta versão:** o console do MinIO ainda não é exposto pelo proxy.
-> Bucket e upload são feitos pelos scripts. Ver decisão 14 no `CLAUDE.md`.
+### Acessar o MinIO pelo navegador
+
+**Console** (administração — buckets, objetos, usuários, policies):
+
+```text
+https://vm-lnx-0369.lab.local:9001/
+```
+
+Publicado direto, com o certificado da `ca-interna` — o navegador **vai avisar**,
+e é assim mesmo: é o comportamento de produção. Login com `MINIO_ROOT_USER` /
+`MINIO_ROOT_PASSWORD` do `.env`.
+
+**API S3 direta** (para demonstrar o caminho quebrado):
+
+```bash
+docker compose --profile demo up -d
+```
+
+Depois disso `https://vm-lnx-0369.lab.local:9000/...` fica alcançável. Abrir
+apenas `https://vm-lnx-0369.lab.local:9000/` no navegador redireciona para a
+`:9001`, exatamente como em produção. Desligue com
+`docker compose --profile demo down` para voltar ao estado que prova a
+exclusividade do proxy no caminho da mídia.
+
+> **Sobre o critério "MinIO não exposto".** Ele vale para o caminho da **mídia**:
+> a porta 9000 continua fechada por padrão. A 9001 é publicada por conveniência
+> de laboratório. Em produção o console não deve ficar exposto ao usuário final.
 
 ---
 

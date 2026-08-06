@@ -6,7 +6,9 @@ services:
   # MinIO — storage S3, agora com TLS.
   # O certificado vem da ca-interna, que simula a Certificadora TLS do MP-GO e
   # NÃO é instalada no navegador. É essa desconfiança que reproduz a falha atual.
-  # Continua sem publicar portas: o único caminho até o objeto é o proxy.
+  # A porta da API S3 (9000) NÃO é publicada: o único caminho até o objeto é o
+  # proxy. Só o console (9001) é publicado, para administração — apresenta o
+  # certificado da ca-interna, então o navegador avisa, igual a produção.
   # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
@@ -19,6 +21,13 @@ services:
       # Hostname público do proxy. Inclui porta porque 8443 não é a padrão;
       # em produção, com 443, vai SEM porta.
       MINIO_SERVER_URL: ${PUBLIC_SCHEME}://${PUBLIC_HOST}:${NGINX_HTTPS_PORT}
+      # URL do console. Em produção, abrir https://vm-lnx-0369:9000/ no
+      # navegador redireciona para a :9001 — este valor reproduz o mesmo salto
+      # no laboratório.
+      MINIO_BROWSER_REDIRECT_URL: https://${MINIO_DIRECT_HOST}:${MINIO_CONSOLE_PORT}
+    ports:
+      # Apenas o console. A API S3 continua fechada.
+      - "${MINIO_CONSOLE_PORT}:9001"
     volumes:
       - minio-data:/data
       - ./nginx/certs/minio.crt:/root/.minio/certs/public.crt:ro

@@ -66,6 +66,22 @@ central e adiciona superfície de erro. Bucket e upload são feitos por script.
 
 **Reavaliar quando:** o fluxo do vídeo estiver validado de ponta a ponta.
 
+**Resolvido em 06/08/2026:** o console é publicado direto em
+`https://vm-lnx-0369.lab.local:9001/`, com o certificado da `ca-interna`.
+
+Uma versão intermediária chegou a servi-lo pelo proxy em `console.lab.local:8443`,
+com certificado confiável. Foi descartada por não corresponder a produção: lá o
+console vive no mesmo hostname do MinIO, e abrir `https://vm-lnx-0369:9000/` no
+navegador redireciona para `https://vm-lnx-0369.intranet.mpgo:9001/`. Além disso,
+`vm-lnx-0369.intranet.mpgo` está em zona DNS distinta de `*.mpgo.mp.br`, então
+nem em produção existiria certificado confiável para esse nome.
+
+`MINIO_BROWSER_REDIRECT_URL` reproduz o redirect `:9000` → `:9001` no laboratório.
+
+**Custo aceito:** o console fica exposto sem passar pelo proxy e com aviso de
+certificado. O critério "MinIO não exposto" continua valendo para o caminho da
+**mídia**, que é o que a PoC valida — a porta 9000 segue fechada por padrão.
+
 ---
 
 ## D5 — Vídeo de teste baixado no setup

@@ -117,14 +117,20 @@ que seria feito em produção.
 
 | Serviço | Papel | Exposto ao host |
 |---|---|---|
-| `minio` | storage S3, com TLS da `ca-interna` | **não** (apenas rede interna do compose) |
+| `minio` | storage S3, com TLS da `ca-interna` | API `9000` **não**; console `9001` sim |
 | `nginx` | proxy reverso / TLS de borda / roteamento por caminho | sim (`8080` HTTP, `8443` HTTPS) |
 | `app` | ThemísIA/MemorIAis simulado (FastAPI + HTMX) | não (só através do proxy) |
 | `minio-exposto` | socat que torna o MinIO alcançável, para demonstrar o caminho quebrado | só com `--profile demo` |
 | `mc` | client auxiliar (bucket + usuário + upload + presign) | não (container efêmero) |
 
-Manter o MinIO **sem publicar portas no host** é parte do teste: prova que o
-único caminho até o objeto é o proxy.
+A **API S3 (9000) não é publicada** — é o que prova que o único caminho até o
+objeto é o proxy, e é sobre ela que vale o critério de sucesso 3. O **console
+(9001) é publicado**, por conveniência de laboratório, apresentando o
+certificado da `ca-interna`; em produção o console não deve ficar exposto ao
+usuário final.
+
+Abrir `https://vm-lnx-0369.lab.local:9000/` no navegador redireciona para a
+`:9001`, reproduzindo o comportamento de produção.
 
 ---
 
@@ -297,7 +303,7 @@ O laboratório é considerado bem-sucedido quando:
 | 2 | Ambiente de execução | WSL2 + Docker Desktop | ambiente já disponível na máquina |
 | 3 | Proxy reverso | NGINX | é o que se pretende usar no ambiente real |
 | 4 | Exposição do MinIO | sem publicar portas no host | prova que o único caminho é o proxy |
-| 5 | Console do MinIO | acessível apenas via proxy, em rota separada | evita segundo ponto de exposição |
+| 5 | Console do MinIO | publicado em `:9001`, fora do proxy | ferramenta de laboratório; em produção não deve ficar exposto ao usuário final |
 | 6 | Papel do proxy | encaminhamento puro, sem reescrita de path | reescrita quebraria a assinatura SigV4 |
 | 7 | Hostname de teste | `intranet.lab.local` via `hosts` | simula `intranet.mpgo.mp.br` sem depender de DNS |
 | 8 | Certificado | duas CAs de laboratório | reproduz a assimetria de produção: navegador confia no proxy (GlobalSign) e não no MinIO (CA interna do MP-GO) |
@@ -306,7 +312,7 @@ O laboratório é considerado bem-sucedido quando:
 | 11 | Resolução do hostname | `intranet.lab.local` como alias de rede do NGINX | o container `mc` precisa resolver o mesmo nome que o navegador usa |
 | 12 | Aliases do `mc` | `lab` (admin, direto) e `proxy` (somente presign) | tarefas administrativas não devem depender do proxy |
 | 13 | Config do NGINX | arquivo único `nginx/nginx.conf`, portas fixas | legibilidade acima de DRY; a duplicação entre `.env` e `nginx.conf` é coberta por checagem automática em `common.sh` |
-| 14 | Console do MinIO | adiado para depois da validação do vídeo | WebSocket e redirect adicionam risco sem ajudar a premissa central |
+| 14 | Console do MinIO | porta 9001 publicada direto, com o certificado da `ca-interna` | reproduz produção, onde `:9000` redireciona para `:9001`; servi-lo pelo proxy exigiria hostname e certificado que produção não tem |
 | 15 | Vídeo de teste | baixado no setup via `TEST_VIDEO_URL`, com extração de `.zip` e validação do box `ftyp` | reproduzível do zero sem versionar binário grande; a validação evita subir um ZIP renomeado, que passaria em todos os testes menos no player |
 | 16 | Credencial que assina | usuário dedicado com apenas `s3:GetObject` no bucket | o access key de quem assina fica visível no `X-Amz-Credential` da URL; com root, todo link de vídeo exporia o administrador do storage |
 | 17 | Validade da URL | 24h | a assinatura é conferida a cada requisição, então precisa cobrir a sessão inteira com pausas, não a duração do vídeo; abaixo disso o player trava no seek |
@@ -360,7 +366,7 @@ devolve `206 Partial Content`. O MinIO não é alcançável de fora.
     && bash scripts/02-upload-test-video.sh && bash scripts/04-test-access.sh`;
 2. abrir o vídeo em player real, confirmar o seek e capturar print (critério 1);
 3. atualizar as seções 14 e 18 com o resultado final;
-4. reavaliar a exposição do console do MinIO (decisão 14).
+4. ~~reavaliar a exposição do console do MinIO~~ — feito, ver decisão 14.
 
 ---
 
