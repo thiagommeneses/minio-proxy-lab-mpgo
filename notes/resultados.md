@@ -9,6 +9,11 @@ MinIO `RELEASE.2025-09-07T16-13-09Z`, `nginx:alpine`.
 |---|---|---|---|
 Segunda execução: **05/08/2026, 21:18** — placar `8 passaram, 0 falharam`.
 
+> **Nota.** As saídas capturadas abaixo são de antes da reestruturação de
+> 06/08/2026, quando o hostname era `videos.lab.local` e o bucket `videos`.
+> Hoje são `intranet.lab.local` e `memoriais`. Os textos foram preservados como
+> foram gerados — são a evidência da execução, não documentação de configuração.
+
 | # | Critério | Status | Evidência |
 |---|---|---|---|
 | 1 | Vídeo abre e reproduz | **parcial** | MP4 real, `content-type: video/mp4`, íntegro; reprodução em player ainda não confirmada |

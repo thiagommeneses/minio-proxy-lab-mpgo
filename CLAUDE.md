@@ -204,7 +204,7 @@ SigV4 cobre o caminho, o proxy não pode reescrevê-lo.
 ### Fase 2 — MinIO
 - subir o container do MinIO com `MINIO_SERVER_URL` apontando para o proxy;
 - configurar credenciais via `.env`;
-- criar o bucket `videos`;
+- criar o bucket `memoriais` e o usuário de presign;
 - enviar o vídeo de teste.
 
 ### Fase 3 — URL pré-assinada

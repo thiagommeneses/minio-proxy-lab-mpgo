@@ -18,14 +18,14 @@ O `mc` assina a URL de dentro da rede do compose; o navegador acessa de fora.
 **Escolha:** opção 2 (`8443:8443`).
 
 **Consequência:** o mesmo `Host` vale dentro e fora da rede do compose.
-A opção 1 produziria `videos.lab.local` na assinatura e
-`videos.lab.local:8443` na requisição do navegador — `SignatureDoesNotMatch`.
+A opção 1 produziria `intranet.lab.local` na assinatura e
+`intranet.lab.local:8443` na requisição do navegador — `SignatureDoesNotMatch`.
 Alterar as portas no `.env` mantém a consistência porque o `listen` é gerado
 a partir das mesmas variáveis.
 
 ---
 
-## D2 — `videos.lab.local` como alias de rede do serviço NGINX
+## D2 — `intranet.lab.local` como alias de rede do serviço NGINX
 
 **Contexto:** o container `mc` precisa resolver o hostname público para assinar
 a URL contra o proxy.
@@ -41,14 +41,15 @@ a URL contra o proxy.
 
 | Alias | Endpoint | Uso |
 |---|---|---|
-| `lab` | `http://minio:9000` | criar bucket, upload |
-| `proxy` | `https://videos.lab.local:8443` | somente gerar a URL pré-assinada |
+| `lab` | `https://minio:9000` | criar bucket, usuário, upload |
+| `proxy` | `https://intranet.lab.local:8443` | somente gerar a URL pré-assinada |
 
 **Motivo:** tarefas administrativas não fazem parte do fluxo em validação e não
 devem depender do proxy. Já o presign **precisa** sair pelo proxy, porque é o
 endpoint do alias que define o `Host` assinado.
 
-**Consequência:** o alias `proxy` usa `--insecure` (certificado autoassinado).
+**Consequência:** o alias `proxy` valida o certificado do proxy contra a
+`ca-publica`, montada como CA no container (ver D11).
 
 ---
 
@@ -161,8 +162,8 @@ revogação sem rotacionar a credencial que assinou. Para conteúdo mais sensív
 includeSubDomains` em toda resposta, e o NGINX repassava.
 
 **Problema:** HSTS vale por **host** e **ignora a porta**. Depois de um único
-acesso a `https://videos.lab.local:8443`, o navegador passaria a forçar HTTPS
-também em `http://videos.lab.local:8080`, onde não há TLS — matando o bloco HTTP
+acesso a `https://intranet.lab.local:8443`, o navegador passaria a forçar HTTPS
+também em `http://intranet.lab.local:8080`, onde não há TLS — matando o bloco HTTP
 que existe justamente para isolar problema de certificado de problema de proxy.
 
 **Escolha:** `proxy_hide_header` nos dois blocos; o HTTPS emite `max-age=0`.

@@ -291,7 +291,7 @@ bash scripts/03-generate-presigned-url.sh
 A saída deve ser uma URL parecida com:
 
 ```text
-https://intranet.lab.local:8443/videos/video-teste.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Expires=3600&X-Amz-Signature=...
+https://intranet.lab.local:8443/memoriais/019fb8eb-.../DEPOIMENTO/019fb8eb-....mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=...
 ```
 
 Confirme que o host é o do **proxy** e não o do MinIO. Esse é o ponto principal da PoC.

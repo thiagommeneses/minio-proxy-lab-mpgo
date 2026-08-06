@@ -236,7 +236,7 @@ reescrito) ou falha de validação TLS (se o SNI for o nome público).
 
 | Item | Laboratório | Produção |
 |---|---|---|
-| Hostname | `videos.lab.local` via `hosts` | a definir, com registro DNS |
+| Hostname | `intranet.lab.local` via `hosts` | `intranet.mpgo.mp.br` (já existe) |
 | Porta pública | `8443` (aparece no `Host`) | `443` (não aparece no `Host`) |
 | Certificado do proxy | autoassinado | emitido pela Certificadora TLS do MP-GO |
 | Perna proxy → MinIO | HTTP | HTTPS validado contra a CA |
