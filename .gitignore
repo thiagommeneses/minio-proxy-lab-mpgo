@@ -15,3 +15,6 @@ Thumbs.db
 
 # policy gerada por scripts/01 a partir de MINIO_BUCKET
 policies/presign-readonly.json
+
+# python
+app/__pycache__/
