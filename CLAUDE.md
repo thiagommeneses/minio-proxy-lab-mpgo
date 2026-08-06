@@ -139,9 +139,12 @@ minio-proxy-lab-mpgo/
 ├── nginx/
 │   ├── nginx.conf             # config única: server HTTP + server HTTPS
 │   └── certs/                 # gerado localmente, não versionar
+├── policies/
+│   └── presign-readonly.json  # gerada por scripts/01, não versionar
 ├── scripts/
 │   ├── lib/
 │   │   └── common.sh          # carrega .env, valida .env x nginx.conf, mc_run()
+│   ├── up.sh                  # sobe validando .env x nginx.conf
 │   ├── 00-setup-certs.sh
 │   ├── 01-create-bucket.sh
 │   ├── 02-upload-test-video.sh
@@ -241,6 +244,10 @@ O laboratório é considerado bem-sucedido quando:
 | Expiração curta durante o teste | `403` no meio da validação | usar expiração de 1h nos testes |
 | Certificado autoassinado | aviso no navegador, `curl` falha | usar `curl -k` ou confiar no CA local |
 | Testar com `HEAD` (`curl -I`) | `403 SignatureDoesNotMatch` com o proxy correto | a assinatura cobre o método; testar sempre com `GET` |
+| MinIO recriado com outro IP | `502` súbito no proxy | `docker compose restart nginx` (o NGINX resolve o upstream só na inicialização) |
+| HSTS herdado do MinIO | porta 8080 deixa de abrir no navegador | `proxy_hide_header Strict-Transport-Security` e política definida no proxy |
+| Relógio do host fora de sincronia | `403` intermitente sem mudança de configuração | SigV4 rejeita `X-Amz-Date` fora de ~15 min; verificar o clock do WSL2 após suspender |
+| URL expira durante a sessão | vídeo trava no seek, não no play | expiração precisa cobrir a sessão com pausas, não a duração do vídeo |
 | `client_max_body_size` padrão | upload grande falha com `413` | ajustar no NGINX se houver upload via proxy |
 
 ---
@@ -286,6 +293,12 @@ O laboratório é considerado bem-sucedido quando:
 | 13 | Config do NGINX | arquivo único `nginx/nginx.conf`, portas fixas | legibilidade acima de DRY; a duplicação entre `.env` e `nginx.conf` é coberta por checagem automática em `common.sh` |
 | 14 | Console do MinIO | adiado para depois da validação do vídeo | WebSocket e redirect adicionam risco sem ajudar a premissa central |
 | 15 | Vídeo de teste | baixado no setup via `TEST_VIDEO_URL`, com extração de `.zip` e validação do box `ftyp` | reproduzível do zero sem versionar binário grande; a validação evita subir um ZIP renomeado, que passaria em todos os testes menos no player |
+| 16 | Credencial que assina | usuário dedicado com apenas `s3:GetObject` no bucket | o access key de quem assina fica visível no `X-Amz-Credential` da URL; com root, todo link de vídeo exporia o administrador do storage |
+| 17 | Validade da URL | 24h | a assinatura é conferida a cada requisição, então precisa cobrir a sessão inteira com pausas, não a duração do vídeo; abaixo disso o player trava no seek |
+| 18 | HSTS | `max-age=0` no laboratório, com o header do MinIO descartado | HSTS vale por host e ignora a porta: qualquer valor positivo forçaria HTTPS na porta 8080 e mataria o caminho de diagnóstico sem TLS |
+| 19 | Proteção contra abuso | `limit_conn` por IP, sem `limit_rate` nem `limit_req` | `limit_req` quebraria a rajada legítima de `Range` do seek; `limit_rate` exigiria conhecer o bitrate e travaria vídeos longos |
+| 20 | TLS no `mc` | certificado do proxy montado como CA no container | desligar a validação justamente no componente que assina as URLs esconderia um MITM nesse caminho |
+| 21 | Subida do ambiente | via `scripts/up.sh` | garante que a checagem `.env` × `nginx.conf` rode antes do `docker compose up` |
 
 Decisões novas devem ser acrescentadas aqui e detalhadas em `notes/decisoes.md`.
 
@@ -293,7 +306,7 @@ Decisões novas devem ser acrescentadas aqui e detalhadas em `notes/decisoes.md`
 
 ## 14. Estado atual
 
-Atualizado em: **05/08/2026**
+Atualizado em: **06/08/2026**
 
 | Item | Estado |
 |---|---|
@@ -305,11 +318,12 @@ Atualizado em: **05/08/2026**
 | Certificado autoassinado | gerado, válido até 07/11/2028 |
 | MinIO | rodando, `healthy`, sem porta publicada |
 | Bucket `videos` | criado, sem acesso anônimo |
-| Vídeo de teste | enviado (62 MiB) — ver pendência sobre `.zip` |
-| URL pré-assinada | gerada com host do proxy |
+| Vídeo de teste | **MP4 real** extraído do `.zip`, 62 MiB, `content-type: video/mp4` |
+| URL pré-assinada | gerada com host do proxy, assinada por usuário dedicado |
 | Acesso ao vídeo via proxy | **validado** (`200` no GET, `206` no Range, íntegro) |
-| Expiração da URL | não testada |
+| Expiração da URL | **validada** (`403` após expirar) |
 | Reprodução em player real | não confirmada |
+| Ciclo a partir do zero | `down -v` executado; falta a subida limpa |
 
 **A premissa central da seção 3 está validada.** A URL pré-assinada nasce com o
 host do proxy, atravessa o NGINX com o `Host` preservado e o MinIO aceita a
@@ -320,19 +334,23 @@ devolve `206 Partial Content`. O MinIO não é alcançável de fora.
 
 ## 15. Pendências
 
-1. refazer o vídeo de teste — era mesmo um ZIP, e o script `02` já foi corrigido:
-   `rm assets/video-teste.mp4 && bash scripts/02-upload-test-video.sh`;
-2. rodar novamente `bash scripts/04-test-access.sh` com os bugs corrigidos;
-3. testar a expiração: `CURTA="$(PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh)"`
-   e, após 35s, esperar `403`;
-4. abrir o vídeo em player real, confirmar o seek e capturar print;
-5. repetir o ciclo após `docker compose down -v` para fechar o critério 7;
-6. atualizar as seções 14 e 18 com o resultado final;
-7. reavaliar a exposição do console do MinIO (decisão 14).
+1. subir do zero e rodar o placar completo — o `down -v` apagou o volume,
+   então esta rodada já fecha o critério 7:
+   `bash scripts/00-setup-certs.sh && bash scripts/up.sh && bash scripts/01-create-bucket.sh
+    && bash scripts/02-upload-test-video.sh && bash scripts/04-test-access.sh`;
+2. abrir o vídeo em player real, confirmar o seek e capturar print (critério 1);
+3. atualizar as seções 14 e 18 com o resultado final;
+4. reavaliar a exposição do console do MinIO (decisão 14).
 
 ---
 
 ## 16. Diário de execução
+
+### 06/08/2026 — revisão técnica e endurecimento
+- **O que foi feito:** segunda execução com **8 de 8 checagens passando** e expiração confirmada (`403` após 35s), fechando o critério 5. Depois, revisão de proxy, certificado, expiração e Host header, com correções aplicadas.
+- **Resultado:** vídeo de teste agora é MP4 real (`content-type: video/mp4`, 64.657.027 bytes, íntegro byte a byte). Aplicado: usuário dedicado somente-leitura para assinar as URLs (o access key aparece no `X-Amz-Credential`, então o root não podia continuar ali); expiração para 24h; HSTS do MinIO descartado e zerado no lab, porque HSTS ignora a porta e estava a caminho de inutilizar o diagnóstico via 8080; `client_max_body_size` escopado em vez de ilimitado; `limit_conn` por IP; `mc` passou a validar o certificado do proxy em vez de usar `--insecure`; `scripts/up.sh` garante a checagem `.env` × `nginx.conf`; e o placar ganhou os grupos 7 (sem redirect nem vazamento de `minio:9000`) e 8 (expiração automatizada).
+- **Problemas encontrados:** dois riscos latentes que ainda não tinham mordido. O IP do upstream fica congelado no NGINX — se o MinIO for recriado, o proxy responde `502` até reiniciar; ficou documentado no README em vez de resolvido, porque `resolver` com variável no `proxy_pass` acrescenta complexidade que a PoC não precisa. E o HSTS de um ano vindo do MinIO, que teria quebrado o caminho HTTP no navegador de quem já acessou o HTTPS.
+- **Próximo passo:** subida limpa após o `down -v` (fecha o critério 7) e reprodução em player real (critério 1).
 
 ### 05/08/2026 — primeira execução real
 - **O que foi feito:** fluxo completo `00`→`04` em WSL2 + Docker Desktop, mais a bateria manual de validação (certificado, testes negativos, integridade, `Range`).
@@ -379,15 +397,34 @@ Guardar aqui (ou em `notes/resultados.md`) tudo que comprove o funcionamento:
 
 ## 18. Ajustes previstos para o ambiente real
 
+> Detalhamento, checklist e configuração do NGINX para produção estão em
+> [`notes/producao.md`](notes/producao.md), já com a análise do certificado
+> real do servidor MinIO (`vm-lnx-0369.intranet.mpgo`).
+
+**Decisão bloqueante:** o hostname público ainda não foi definido. Ele entra na
+assinatura SigV4, então precisa ser fixado antes de gerar qualquer URL em
+produção. O certificado atual cobre só `vm-lnx-0369.intranet.mpgo` — nome de
+máquina — e vence em **02/09/2026**.
+
+**Decidido:** a perna proxy → MinIO usará HTTPS validado contra a CA do MP-GO.
+
 Lista a ser confirmada ao final da PoC:
 
 - certificado emitido por CA confiável em vez de autoassinado;
 - hostname público real e registro DNS;
-- `MINIO_SERVER_URL` apontando para o domínio de produção;
+- `MINIO_SERVER_URL` apontando para o domínio de produção **sem porta**, já que
+  em `443` o header `Host` não a inclui — incluir é a forma mais provável de
+  reproduzir o `SignatureDoesNotMatch` no ambiente real;
 - regras de firewall garantindo que o MinIO só aceite tráfego do proxy;
-- política de expiração de URL alinhada à duração média do vídeo;
+- HSTS com `max-age=86400` durante a implantação e `31536000` depois que todo o
+  caminho estiver comprovadamente em HTTPS (no lab está em `0` de propósito);
+- `resolver` no NGINX, ou reinício automático, para não congelar o IP do upstream;
+- revisão do `limit_conn` considerando clientes atrás de NAT corporativo;
+- credencial de presign rotacionável, com política de expiração alinhada à
+  duração máxima de sessão — a URL é um bearer token e não há revogação;
 - avaliação de cache e de limite de banda no proxy;
-- logging e monitoração do caminho de acesso.
+- logging e monitoração do caminho de acesso, mantendo a query string fora do
+  log (o `log_format lab` já faz isso usando `$uri` em vez de `$request`).
 
 ---
 

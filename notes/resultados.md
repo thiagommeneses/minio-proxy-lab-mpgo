@@ -7,14 +7,18 @@ MinIO `RELEASE.2025-09-07T16-13-09Z`, `nginx:alpine`.
 
 | # | Critério | Status | Evidência |
 |---|---|---|---|
-| 1 | Vídeo abre e reproduz | **parcial** | download íntegro; reprodução em player não confirmada (ver pendência A) |
+Segunda execução: **05/08/2026, 21:18** — placar `8 passaram, 0 falharam`.
+
+| # | Critério | Status | Evidência |
+|---|---|---|---|
+| 1 | Vídeo abre e reproduz | **parcial** | MP4 real, `content-type: video/mp4`, íntegro; reprodução em player ainda não confirmada |
 | 2 | Acesso exclusivo pelo proxy | **OK** | log do NGINX registra `GET /videos/video-teste.mp4 ... upstream=206` |
 | 3 | MinIO não exposto diretamente | **OK** | `docker compose port minio 9000` → `invalid IP:0`; `curl 127.0.0.1:9000` → `000` |
 | 4 | Certificado apresentado é o do proxy | **OK** | `CN=videos.lab.local`, SAN correta |
-| 5 | URL expira e retorna 403 | **pendente** | teste bloqueado por bug já corrigido (ver abaixo) |
-| 6 | Seek funciona (206 Partial Content) | **OK** | `Content-Range: bytes 0-1023/64657225` |
-| 7 | Reprodutível do zero | **parcial** | fluxo `00`→`04` rodou; falta repetir após `down -v` |
-| 8 | Documentado | em andamento | este arquivo |
+| 5 | URL expira e retorna 403 | **OK** | URL de 30s → `403` após 35s |
+| 6 | Seek funciona (206 Partial Content) | **OK** | `Content-Range: bytes 0-1023/64657027` |
+| 7 | Reprodutível do zero | **parcial** | `down -v` executado; falta a subida limpa |
+| 8 | Documentado | **OK** | este arquivo, `decisoes.md` e `CLAUDE.md` |
 
 **A premissa central da PoC está validada:** a URL pré-assinada é gerada com o
 host do proxy, atravessa o NGINX preservando o `Host`, e o MinIO aceita a
@@ -109,16 +113,66 @@ Todos nos scripts de teste, nenhum na configuração do laboratório.
 | B4 | `grep: command not found` dentro do container `mc` | a imagem `minio/mc` não traz coreutils | parsing da URL movido para o host |
 | B5 | `assets/video-teste.mp4` era um ZIP | a origem parou de distribuir o `.mp4` avulso; só publica `.zip` | `02` detecta o formato pelo conteúdo, extrai o MP4 do zip e recusa upload sem o box `ftyp` |
 
+## Segunda execução — 05/08/2026
+
+```text
+==> o download é um ZIP; extraindo o MP4
+==> extraído: BigBuckBunny_320x180.mp4
+ OK MP4 válido: assets/video-teste.mp4 (62M)
+
+  PASS NGINX no ar (HTTPS)                    (200)
+  PASS MinIO sem porta publicada              (000)
+  OK   URL assinada com o host do proxy (videos.lab.local:8443)
+  PASS GET do objeto                          (200)
+       content-type: video/mp4   bytes: 64657027
+  PASS conteúdo íntegro (byte a byte)         (identico)
+  PASS 206 Partial Content                    (206)
+  PASS 1024 bytes no range pedido             (1024)
+       content-range: bytes 0-1023/64657027
+  PASS sem query string -> 403                (403)
+  PASS assinatura adulterada -> 403           (403)
+
+  RESULTADO: 8 passaram, 0 falharam
+```
+
+Expiração, verificada em seguida:
+
+```text
+$ CURTA="$(PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh)"
+==> gerando URL pré-assinada (expira em 30s) via https://videos.lab.local:8443
+$ sleep 35 && curl -sk -o /dev/null -w '%{http_code}\n' "$CURTA"
+403
+```
+
+O `content-type: video/mp4` e o tamanho `64657027` (contra `64657225` do ZIP
+anterior) confirmam que agora o objeto é o MP4 de verdade.
+
+## Endurecimento aplicado em 06/08/2026
+
+Revisão de proxy, certificado, expiração e Host header. Nenhum dos itens abaixo
+tinha causado falha ainda; são riscos identificados e fechados.
+
+| Item | Problema | Correção |
+|---|---|---|
+| E6 | o access key de quem assina fica visível no `X-Amz-Credential`, e era o root | usuário dedicado com apenas `s3:GetObject` no bucket, criado por `scripts/01` |
+| E3 | expiração de 1h podia acabar no meio de uma sessão | 24h, cobrindo a sessão com pausas |
+| P2 | HSTS de um ano vindo do MinIO; HSTS ignora a porta e inutilizaria a 8080 | header descartado e política assumida pelo proxy, `max-age=0` no lab |
+| P4 | `client_max_body_size 0` valia para todas as rotas | 1m no padrão, 5g explícito na rota do S3 |
+| P5 | sem proteção contra abuso | `limit_conn` por IP; `limit_req` e `limit_rate` descartados por quebrarem seek |
+| P6 | a checagem `.env` × `nginx.conf` não rodava no `docker compose up` | `scripts/up.sh` |
+| C2 | o `mc` assinava com `--insecure` | certificado do proxy montado como CA no container |
+| H3 | não havia teste contra redirect vazando o endpoint interno | grupo 7 do placar |
+| P1 | NGINX congela o IP do upstream; MinIO recriado → `502` | documentado no README (`docker compose restart nginx`) |
+
 ## Pendências
 
-- **A.** ~~Confirmar que o vídeo é MP4 e não ZIP.~~ **Confirmado: era um ZIP.**
-  A origem não distribui mais o `.mp4` avulso. O script `02` foi corrigido
-  (B5); falta reexecutar para gerar o MP4 de verdade e refazer o upload:
-  `rm assets/video-teste.mp4 && bash scripts/02-upload-test-video.sh`
-- **B.** Rodar o teste de expiração agora que B3 está corrigido.
+- **A.** ~~Vídeo é ZIP.~~ Resolvido: MP4 real, verificado pelo box `ftyp`.
+- **B.** ~~Testar expiração.~~ Resolvido: `403` confirmado, agora automatizado
+  no grupo 8 do placar.
 - **C.** Confirmar o seek em player real e capturar print do vídeo reproduzindo
-  com a URL do proxy na barra de endereço.
-- **D.** Repetir o ciclo após `docker compose down -v` para fechar o critério 7.
+  com a URL do proxy na barra de endereço. **Único item que separa o critério 1.**
+- **D.** Subida limpa após o `docker compose down -v` já executado, para fechar
+  o critério 7.
 
 ## Observações para o ambiente real
 

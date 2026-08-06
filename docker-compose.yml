@@ -69,6 +69,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_PRESIGN_USER: ${MINIO_PRESIGN_USER}
+      MINIO_PRESIGN_PASSWORD: ${MINIO_PRESIGN_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET}
       TEST_OBJECT: ${TEST_OBJECT}
       PUBLIC_HOST: ${PUBLIC_HOST}
@@ -77,6 +79,10 @@ services:
       PRESIGN_EXPIRY: ${PRESIGN_EXPIRY}
     volumes:
       - ./assets:/assets:ro
+      - ./policies:/policies:ro
+      # Certificado do proxy montado como CA confiável do mc. É o que permite
+      # gerar a URL pré-assinada sem --insecure, como a aplicação real faria.
+      - ./nginx/certs/server.crt:/root/.mc/certs/CAs/lab-proxy.crt:ro
     networks:
       - lab
     depends_on:

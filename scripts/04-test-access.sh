@@ -39,22 +39,22 @@ http_code() {
 }
 
 # ---------------------------------------------------------------------------
-info "1/6  proxy responde"
+info "1/8  proxy responde"
 check "NGINX no ar (HTTPS)" "200" "$(http_code -m 10 "$PUBLIC_ENDPOINT/healthz")"
 
 # ---------------------------------------------------------------------------
-info "2/6  MinIO não acessível diretamente pelo host"
+info "2/8  MinIO não acessível diretamente pelo host"
 # 000 = conexão recusada ou timeout, que é exatamente o resultado desejado.
 check "MinIO sem porta publicada" "000" "$(http_code -m 3 "http://127.0.0.1:9000/")"
 
 # ---------------------------------------------------------------------------
-info "3/6  gerando URL pré-assinada"
+info "3/8  gerando URL pré-assinada"
 URL="$(bash scripts/03-generate-presigned-url.sh)" \
     || die "falha ao gerar a URL pré-assinada"
 printf '     %s\n' "$URL"
 
 # ---------------------------------------------------------------------------
-info "4/6  download do objeto pelo proxy (GET, nunca HEAD)"
+info "4/8  download do objeto pelo proxy (GET, nunca HEAD)"
 STATS="$(curl -sk -o "$TMPFILE" -w '%{http_code} %{content_type} %{size_download}' \
          -m 300 "$URL" 2>/dev/null || true)"
 [ -n "$STATS" ] || STATS="000 - 0"
@@ -76,7 +76,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-info "5/6  streaming com Range (seek do player)"
+info "5/8  streaming com Range (seek do player)"
 check "206 Partial Content" "206" "$(http_code -r 0-1023 -m 30 "$URL")"
 
 RANGE_BYTES="$(curl -sk -r 0-1023 -o /dev/null -w '%{size_download}' -m 30 "$URL" 2>/dev/null || true)"
@@ -88,9 +88,41 @@ printf '     content-range: %s\n' "${CONTENT_RANGE:-<ausente>}"
 
 # ---------------------------------------------------------------------------
 # Sem isto, um bucket público passaria em tudo acima e a PoC não provaria nada.
-info "6/6  a assinatura está mesmo sendo verificada"
+info "6/8  a assinatura está mesmo sendo verificada"
 check "sem query string -> 403" "403" "$(http_code -m 15 "${URL%%\?*}")"
 check "assinatura adulterada -> 403" "403" "$(http_code -m 15 "${URL%?}X")"
+
+# ---------------------------------------------------------------------------
+# Se MINIO_SERVER_URL estiver errado, o MinIO responde 3xx com Location
+# apontando para o endereço interno — vazando exatamente o que a PoC esconde.
+info "7/8  nenhum vazamento do endpoint interno"
+
+REDIRECTS="$(curl -sk -o /dev/null -w '%{num_redirects}' -r 0-0 -m 30 "$URL" 2>/dev/null || true)"
+check "sem redirect" "0" "${REDIRECTS:-erro}"
+
+HDRS="$(curl -sk -D- -o /dev/null -r 0-0 -m 30 "$URL" 2>/dev/null || true)"
+LEAK="$(printf '%s' "$HDRS" | grep -ci 'minio:9000\|^location:' || true)"
+check "headers sem 'minio:9000' nem Location" "0" "${LEAK:-0}"
+
+# ---------------------------------------------------------------------------
+# Gera uma URL de 30s e espera ela morrer. Não dá para testar isso com o
+# PRESIGN_EXPIRY real (24h), então o valor é sobreposto só nesta chamada — o
+# que só funciona porque lib/common.sh não deixa o .env vencer do ambiente.
+# Custa ~40s; SKIP_EXPIRY_TEST=1 pula.
+if [ "${SKIP_EXPIRY_TEST:-0}" = "1" ]; then
+    info "8/8  expiração da URL: pulada (SKIP_EXPIRY_TEST=1)"
+else
+    info "8/8  expiração da URL (leva ~40s)"
+    CURTA="$(PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh 2>/dev/null)" || CURTA=""
+    if [ -n "$CURTA" ]; then
+        check "URL curta válida agora" "206" "$(http_code -r 0-0 -m 15 "$CURTA")"
+        printf '     aguardando 35s para a assinatura expirar...\n'
+        sleep 35
+        check "URL expirada -> 403" "403" "$(http_code -m 15 "$CURTA")"
+    else
+        warn "não foi possível gerar a URL curta, expiração não verificada"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 info "certificado apresentado pelo proxy"
@@ -102,13 +134,6 @@ if command -v openssl >/dev/null 2>&1; then
 else
     warn "openssl ausente, pulando inspeção do certificado"
 fi
-
-# ---------------------------------------------------------------------------
-echo
-info "expiração da URL: não testada aqui (levaria $PRESIGN_EXPIRY)"
-echo "     Para validar:"
-echo "       CURTA=\"\$(PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh)\""
-echo "       sleep 35 && curl -sk -o /dev/null -w '%{http_code}\\n' \"\$CURTA\"   # esperado: 403"
 
 echo
 printf '\033[1m  RESULTADO: %d passaram, %d falharam\033[0m\n' "$PASS" "$FAIL"

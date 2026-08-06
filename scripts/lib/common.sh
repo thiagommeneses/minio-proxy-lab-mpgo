@@ -39,7 +39,9 @@ while IFS= read -r _line || [ -n "$_line" ]; do
 done < .env
 unset _line _key _val
 
-for var in MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BUCKET TEST_OBJECT \
+for var in MINIO_ROOT_USER MINIO_ROOT_PASSWORD \
+           MINIO_PRESIGN_USER MINIO_PRESIGN_PASSWORD \
+           MINIO_BUCKET TEST_OBJECT \
            PUBLIC_HOST PUBLIC_SCHEME NGINX_HTTP_PORT NGINX_HTTPS_PORT \
            PRESIGN_EXPIRY; do
     [ -n "${!var:-}" ] || die "variável $var ausente ou vazia no .env"
@@ -62,14 +64,31 @@ mc_run() {
     docker compose run --rm -T mc -c "$1"
 }
 
+# O mc valida o certificado do proxy usando nginx/certs/server.crt, montado
+# como CA no container (ver docker-compose.yml). É o comportamento que a
+# aplicação real precisa ter — desligar a validação no componente que assina
+# as URLs esconderia justamente um MITM nesse caminho.
+# MC_INSECURE=1 no .env é escotilha de emergência.
+if [ "${MC_INSECURE:-0}" = "1" ]; then
+    MC_TLS_FLAG="--insecure"
+    warn "MC_INSECURE=1: validação do certificado desligada no mc"
+else
+    MC_TLS_FLAG=""
+fi
+export MC_TLS_FLAG
+
 # Trechos de shell que registram os dois aliases. São strings passadas a
-# `sh -c` DENTRO do container: as aspas e os $ precisam sobreviver literais
-# até lá, por isso aspas simples aqui. Os avisos SC2016/SC2089/SC2090
-# apontam exatamente o comportamento desejado e são silenciados abaixo.
+# `sh -c` DENTRO do container: as aspas e os $ das variáveis do container
+# precisam sobreviver literais até lá, por isso o escape. Os avisos
+# SC2016/SC2089/SC2090 apontam exatamente o comportamento desejado.
+#
+# lab   = administrador, direto no MinIO. Cria bucket, sobe arquivo, cria usuário.
+# proxy = usuário dedicado somente-leitura, através do proxy. SÓ assina URLs.
+#         O access key deste alias fica visível no X-Amz-Credential da URL.
 # shellcheck disable=SC2016,SC2089
 MC_ALIAS_ADMIN='mc --no-color alias set lab http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null'
-# shellcheck disable=SC2016,SC2089
-MC_ALIAS_PROXY='mc --no-color --insecure alias set proxy "$PUBLIC_SCHEME://$PUBLIC_HOST:$NGINX_HTTPS_PORT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null'
+# shellcheck disable=SC2089
+MC_ALIAS_PROXY="mc --no-color $MC_TLS_FLAG alias set proxy \"\$PUBLIC_SCHEME://\$PUBLIC_HOST:\$NGINX_HTTPS_PORT\" \"\$MINIO_PRESIGN_USER\" \"\$MINIO_PRESIGN_PASSWORD\" >/dev/null"
 # shellcheck disable=SC2090
 export MC_ALIAS_ADMIN MC_ALIAS_PROXY
 

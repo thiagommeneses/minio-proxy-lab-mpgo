@@ -83,8 +83,11 @@ minio-proxy-lab-mpgo/
 ├── nginx/
 │   ├── nginx.conf             # config única: server HTTP + server HTTPS
 │   └── certs/                 # gerado por scripts/00
+├── policies/
+│   └── presign-readonly.json  # gerada por scripts/01
 ├── scripts/
 │   ├── lib/common.sh
+│   ├── up.sh                  # sobe validando .env x nginx.conf
 │   ├── 00-setup-certs.sh
 │   ├── 01-create-bucket.sh
 │   ├── 02-upload-test-video.sh
@@ -160,10 +163,19 @@ Gera `nginx/certs/server.crt` e `nginx/certs/server.key` para `videos.lab.local`
 ### 3. Subir os serviços
 
 ```bash
-docker compose up -d
+bash scripts/up.sh
 ```
 
 Sobem dois serviços: `minio` (sem portas publicadas) e `nginx` (portas `8080` e `8443`).
+
+Use `scripts/up.sh` em vez de `docker compose up -d` direto: ele confere se as
+portas e o hostname do `.env` batem com o `nginx/nginx.conf` antes de subir.
+
+> **Se recriar o container do MinIO, reinicie o NGINX:**
+> `docker compose restart nginx`
+>
+> O NGINX resolve o nome `minio` uma vez, ao iniciar, e guarda o IP. Se o
+> MinIO voltar com outro IP, o proxy passa a responder `502` até ser reiniciado.
 
 ### 4. Verificar se os serviços subiram
 
@@ -174,13 +186,18 @@ docker compose logs -f
 
 Ambos devem aparecer como `running`. O MinIO leva alguns segundos até o healthcheck passar.
 
-### 5. Criar o bucket
+### 5. Criar o bucket e o usuário de presign
 
 ```bash
 bash scripts/01-create-bucket.sh
 ```
 
-Cria o bucket definido em `MINIO_BUCKET` (padrão: `videos`), privado.
+Cria o bucket definido em `MINIO_BUCKET` (padrão: `videos`), privado, e o
+usuário `MINIO_PRESIGN_USER` com uma única permissão: `s3:GetObject` no bucket.
+
+É esse usuário que assina as URLs. O motivo é que o access key de quem assina
+fica visível na URL, no parâmetro `X-Amz-Credential` — assinar com o root
+exporia o administrador do storage em todo link de vídeo distribuído.
 
 ### 6. Enviar o vídeo de teste
 
@@ -220,9 +237,13 @@ Confirme que o host é o do **proxy** e não o do MinIO. Esse é o ponto princip
 bash scripts/04-test-access.sh
 ```
 
-O script roda cinco verificações e imprime um placar no final: proxy no ar,
-MinIO inacessível pelo host, geração da URL, acesso ao objeto e `Range`.
-Sai com código diferente de zero se alguma falhar.
+O script roda oito grupos de verificação e imprime um placar no final: proxy no
+ar, MinIO inacessível pelo host, geração da URL, download e integridade,
+`Range`, testes negativos de assinatura, ausência de vazamento do endpoint
+interno e expiração. Sai com código diferente de zero se alguma falhar.
+
+O teste de expiração gera uma URL de 30s e espera ela morrer, somando ~40s à
+execução. Para pular: `SKIP_EXPIRY_TEST=1 bash scripts/04-test-access.sh`.
 
 Ou manualmente:
 
@@ -238,11 +259,13 @@ curl -k -r 0-1023 -o /dev/null -w '%{http_code}\n' "$URL"
 
 E abra a URL no navegador para reproduzir o vídeo.
 
-### 9. Testar a expiração
+### 9. Testar a expiração isoladamente
+
+Já coberto pelo script `04`, mas dá para rodar à parte:
 
 ```bash
-PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh
-# aguarde 35s e repita o curl — esperado: 403
+CURTA="$(PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh)"
+sleep 35 && curl -sk -o /dev/null -w '%{http_code}\n' "$CURTA"   # esperado: 403
 ```
 
 > **Escopo desta versão:** o console do MinIO ainda não é exposto pelo proxy.
@@ -255,6 +278,7 @@ PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh
 | Verificação | Como testar | Resultado esperado |
 |---|---|---|
 | Vídeo reproduz | abrir a URL no navegador | vídeo toca sem erro |
+| Sem vazamento interno | `04-test-access.sh` grupo 7 | sem redirect, sem `minio:9000` |
 | Acesso pelo proxy | ver a barra de endereço / `curl -I` | host `videos.lab.local:8443` |
 | MinIO não exposto | `curl http://localhost:9000` | conexão recusada |
 | Certificado do proxy | inspecionar o cadeado no navegador | certificado de `videos.lab.local` |
@@ -298,9 +322,40 @@ diferente do usado na assinatura.
 
 ### Container não sobe
 
-- portas `8080`/`8443` ocupadas — ajuste no `.env`;
+- portas `8080`/`8443` ocupadas — ajuste no `.env` **e** no `nginx/nginx.conf`;
 - Docker parado;
 - `.env` ausente ou com variável faltando.
+
+### `502 Bad Gateway` do nada
+
+O NGINX resolve `minio` uma vez, ao iniciar, e guarda o IP. Se o container do
+MinIO foi recriado, ele voltou com outro endereço:
+
+```bash
+docker compose restart nginx
+```
+
+### `429 Too Many Requests`
+
+Limite de conexões simultâneas por IP (`limit_conn perip 100`). Só deve
+aparecer com muitos clientes atrás do mesmo NAT — ajuste o valor em
+`nginx/nginx.conf` se for o caso.
+
+### `AccessDenied` ao gerar a URL
+
+O usuário de presign tem apenas `s3:GetObject` no bucket. Se você mudou
+`MINIO_BUCKET` depois de criar o usuário, a policy aponta para o bucket antigo:
+
+```bash
+bash scripts/01-create-bucket.sh   # regenera a policy com o bucket atual
+```
+
+### Erro de TLS no `mc` ao gerar a URL
+
+O `mc` valida o certificado do proxy usando `nginx/certs/server.crt`, montado
+como CA no container. Se você regerou o certificado (`00-setup-certs.sh --force`),
+recrie o container: `docker compose up -d --force-recreate`. Como último
+recurso, `MC_INSECURE=1` no `.env` desliga a validação.
 
 ### Bucket não encontrado
 
@@ -372,7 +427,7 @@ docker compose down -v          # remove containers e o volume do MinIO
 rm -rf nginx/certs assets/video-teste.mp4
 
 bash scripts/00-setup-certs.sh
-docker compose up -d
+bash scripts/up.sh
 bash scripts/01-create-bucket.sh
 bash scripts/02-upload-test-video.sh
 bash scripts/04-test-access.sh

@@ -120,4 +120,80 @@ HTTPS). Se um for alterado sem o outro, os dois caminhos passam a divergir.
 
 ---
 
+## D7 — Usuário dedicado para assinar as URLs
+
+**Contexto:** o presign era feito com `MINIO_ROOT_USER`. O access key de quem
+assina aparece em texto claro na URL, no parâmetro `X-Amz-Credential`.
+
+**Escolha:** usuário `MINIO_PRESIGN_USER` com uma única permissão,
+`s3:GetObject` no bucket de vídeos, criado por `scripts/01-create-bucket.sh`.
+
+**Motivo:** todo link de vídeo distribuído revelava o usuário administrador do
+storage. Com o usuário dedicado, o que vaza é uma identidade que não lista, não
+grava e não apaga nada.
+
+**Consequência:** a policy é gerada no host (`policies/presign-readonly.json`) e
+montada no container, porque a imagem `minio/mc` não tem ferramentas para
+montar o arquivo lá dentro. Trocar `MINIO_BUCKET` exige rodar o `01` de novo.
+
+---
+
+## D8 — Validade da URL em 24h
+
+**Contexto:** a pergunta natural é "quanto dura o vídeo?", mas ela é a errada.
+
+**Motivo:** a assinatura é conferida a **cada requisição**. O que precisa ser
+coberto é a duração da sessão, incluindo pausas — um vídeo de 2h assistido com
+interrupções pode ocupar 5h de relógio. Se a URL expira antes, o vídeo não falha
+ao abrir: ele trava no próximo seek, no meio da sessão, e o sintoma é confuso.
+
+**Escolha:** 24h.
+
+**Contrapartida:** a URL é um bearer token. Se vazar, vale até expirar e não há
+revogação sem rotacionar a credencial que assinou. Para conteúdo mais sensível,
+6h ainda cobre um vídeo de 2h com folga. Teto do MinIO: 7 dias.
+
+---
+
+## D9 — HSTS controlado pelo proxy, `max-age=0` no laboratório
+
+**Contexto:** o MinIO emite `Strict-Transport-Security: max-age=31536000;
+includeSubDomains` em toda resposta, e o NGINX repassava.
+
+**Problema:** HSTS vale por **host** e **ignora a porta**. Depois de um único
+acesso a `https://videos.lab.local:8443`, o navegador passaria a forçar HTTPS
+também em `http://videos.lab.local:8080`, onde não há TLS — matando o bloco HTTP
+que existe justamente para isolar problema de certificado de problema de proxy.
+
+**Escolha:** `proxy_hide_header` nos dois blocos; o HTTPS emite `max-age=0`.
+
+**Motivo do zero:** além de não poluir, ele **limpa** a política já gravada em
+navegadores que acessaram versões anteriores do laboratório.
+
+**Em produção:** `86400` durante a implantação, para poder reverter sem deixar
+clientes presos, e `31536000` depois que todo o caminho estiver em HTTPS.
+
+---
+
+## D10 — `limit_conn` em vez de `limit_req` ou `limit_rate`
+
+**Contexto:** o laboratório serve vídeos de 1 minuto a 2 horas.
+
+**Alternativas descartadas:**
+
+- `limit_req` — o seek do player dispara uma rajada legítima de requisições
+  `Range`. Limitar taxa de requisição transformaria uso normal em `503`.
+- `limit_rate` — a taxa correta depende do bitrate. Errar para baixo trava a
+  reprodução; errar para cima não protege. Com vídeos de perfis tão diferentes,
+  não existe um valor único defensável.
+
+**Escolha:** `limit_conn perip 100`, conexões simultâneas por IP.
+
+**Consequência:** protege contra um scraper abrindo centenas de conexões sem
+interferir em uso normal. O valor é generoso de propósito porque, atrás de NAT
+corporativo, muitos usuários compartilham o mesmo IP — precisa ser revisto se
+isso virar produção.
+
+---
+
 <!-- Novas decisões abaixo, seguindo o mesmo formato. -->
