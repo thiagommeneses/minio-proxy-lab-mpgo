@@ -1,1 +1,22 @@
-*.crt -text
+# Normaliza tudo para LF no repositório e no checkout.
+#
+# Motivo: os scripts rodam em WSL/Linux. Um editor do Windows que salve com
+# CRLF quebra o shebang ("bad interpreter: ^M") e corrompe heredocs — falha
+# confusa, porque o arquivo parece idêntico no editor.
+* text=auto eol=lf
+
+# Scripts e configuração: LF obrigatório, sem exceção.
+*.sh    text eol=lf
+*.conf  text eol=lf
+*.inc   text eol=lf
+*.yml   text eol=lf
+*.py    text eol=lf
+Dockerfile text eol=lf
+
+# Binários e certificados: não tocar.
+*.crt   -text
+*.key   -text
+*.pem   -text
+*.mp4   -text
+*.zip   -text
+*.png   -text
