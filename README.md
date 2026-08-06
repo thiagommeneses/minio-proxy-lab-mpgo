@@ -59,7 +59,11 @@ Instale `certs/ca-publica.crt` como confiável no Windows, conforme o script ind
 e reinicie o navegador. **Não instale a `ca-interna.crt`** — ela precisa continuar
 não confiável para a demonstração fazer sentido.
 
-O primeiro start baixa o vídeo de teste e leva cerca de um minuto.
+O primeiro start baixa o vídeo de teste e leva cerca de um minuto. Depois disso
+ele fica guardado, então `docker compose down` e `up` são rápidos.
+
+Só o `docker compose down -v` apaga o vídeo — evite antes de uma apresentação,
+porque o próximo start vai precisar de internet para baixar de novo.
 
 ## O que abrir
 
