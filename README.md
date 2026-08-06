@@ -53,14 +53,18 @@ bash certs.sh
 docker compose up -d --build
 ```
 
-O `.env` fica de fora do git, então senhas nunca vão para o repositório.
+Lembrete: o `.env` fica sem ir no commit para o repositório no GitHub.
 
-Instale `certs/ca-publica.crt` como confiável no Windows, conforme o script indica,
-e reinicie o navegador. **Não instale a `ca-interna.crt`** — ela precisa continuar
-não confiável para a demonstração fazer sentido.
+- Instale `certs/ca-publica.crt` como confiável no Host de teste Windows (Usuário), conforme o comando no script indicado.
+  Exemplo (executar no PowerShell como Admin):  `Import-Certificate -FilePath .\certs\ca-publica.crt -CertStoreLocation Cert:\LocalMachine\Root`
+- Reinicie o navegador. **Não instale a `ca-interna.crt`** — ela precisa continuar não confiável para a demonstração fazer sentido.
 
 O primeiro start baixa o vídeo de teste e leva cerca de um minuto. Depois disso
 ele fica guardado, então `docker compose down` e `up` são rápidos.
+
+Se o download falhar, a página avisa. Nesse caso abra o console do MinIO,
+crie o bucket `memoriais` se não existir e suba qualquer `.mp4` com o nome
+`depoimento.mp4`.
 
 Só o `docker compose down -v` apaga o vídeo — evite antes de uma apresentação,
 porque o próximo start vai precisar de internet para baixar de novo.
