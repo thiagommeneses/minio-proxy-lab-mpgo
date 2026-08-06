@@ -18,13 +18,17 @@ info "gerando URL pré-assinada (expira em $PRESIGN_EXPIRY) via $PUBLIC_ENDPOINT
 RAW="$(mc_run "
 set -e
 $MC_ALIAS_PROXY
-mc --no-color --insecure share download \
+mc --no-color $MC_TLS_FLAG share download \
    --expire \"\$PRESIGN_EXPIRY\" \
-   proxy/\"\$MINIO_BUCKET\"/\"\$TEST_OBJECT\" \
- | grep '^Share: ' | cut -d' ' -f2 | sed 's|^|PRESIGNED_URL=|'
+   proxy/\"\$MINIO_BUCKET\"/\"\$TEST_OBJECT\"
 ")"
 
-URL="$(printf '%s' "$RAW" | tr -d '\r' | grep -o 'PRESIGNED_URL=.*' | cut -d= -f2- || true)"
+URL="$(
+    printf '%s\n' "$RAW" \
+    | tr -d '\r' \
+    | grep '^Share: ' \
+    | cut -d' ' -f2
+)"
 
 [ -n "$URL" ] || die "não foi possível extrair a URL. Saída do mc:
 $RAW"

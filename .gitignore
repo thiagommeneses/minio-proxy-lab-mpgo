@@ -6,7 +6,15 @@ nginx/certs/
 
 # vídeo de teste (baixado pelo script, não versionar binário grande)
 assets/*.mp4
+assets/*.zip
+assets/.download.tmp
 
 # sistema
 .DS_Store
 Thumbs.db
+
+# policy gerada por scripts/01 a partir de MINIO_BUCKET
+policies/presign-readonly.json
+
+# python
+app/__pycache__/

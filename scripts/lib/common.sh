@@ -18,13 +18,32 @@ die()  { printf '\033[0;31mERRO\033[0m %s\n' "$*" >&2; exit 1; }
 # --- ambiente --------------------------------------------------------------
 [ -f .env ] || die ".env não encontrado. Rode primeiro: cp .env.example .env"
 
-set -a
-# shellcheck disable=SC1091
-. ./.env
-set +a
+# Carrega o .env SEM sobrescrever variáveis já presentes no ambiente.
+# É o que permite sobrepor um valor pontualmente na linha de comando:
+#   PRESIGN_EXPIRY=30s bash scripts/03-generate-presigned-url.sh
+# Um 'set -a; . ./.env' faria o arquivo vencer da variável passada pelo caller.
+while IFS= read -r _line || [ -n "$_line" ]; do
+    _line="${_line#"${_line%%[![:space:]]*}"}"          # trim à esquerda
+    case "$_line" in ''|'#'*) continue ;; esac
+    case "$_line" in *=*) ;; *) continue ;; esac
 
-for var in MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BUCKET TEST_OBJECT \
+    _key="${_line%%=*}"
+    _val="${_line#*=}"
+    _key="${_key//[[:space:]]/}"
+    case "$_key" in [A-Za-z_]*) ;; *) continue ;; esac
+
+    _val="${_val%\"}"; _val="${_val#\"}"                # aspas opcionais
+    _val="${_val%\'}"; _val="${_val#\'}"
+
+    [ -n "${!_key:-}" ] || export "${_key}=${_val}"
+done < .env
+unset _line _key _val
+
+for var in MINIO_ROOT_USER MINIO_ROOT_PASSWORD \
+           MINIO_PRESIGN_USER MINIO_PRESIGN_PASSWORD \
+           MINIO_BUCKET TEST_OBJECT \
            PUBLIC_HOST PUBLIC_SCHEME NGINX_HTTP_PORT NGINX_HTTPS_PORT \
+           MINIO_DIRECT_HOST MINIO_DIRECT_PORT PRESIGN_EXPIRY_HOURS \
            PRESIGN_EXPIRY; do
     [ -n "${!var:-}" ] || die "variável $var ausente ou vazia no .env"
 done
@@ -46,14 +65,31 @@ mc_run() {
     docker compose run --rm -T mc -c "$1"
 }
 
+# O mc valida o certificado do proxy usando nginx/certs/server.crt, montado
+# como CA no container (ver docker-compose.yml). É o comportamento que a
+# aplicação real precisa ter — desligar a validação no componente que assina
+# as URLs esconderia justamente um MITM nesse caminho.
+# MC_INSECURE=1 no .env é escotilha de emergência.
+if [ "${MC_INSECURE:-0}" = "1" ]; then
+    MC_TLS_FLAG="--insecure"
+    warn "MC_INSECURE=1: validação do certificado desligada no mc"
+else
+    MC_TLS_FLAG=""
+fi
+export MC_TLS_FLAG
+
 # Trechos de shell que registram os dois aliases. São strings passadas a
-# `sh -c` DENTRO do container: as aspas e os $ precisam sobreviver literais
-# até lá, por isso aspas simples aqui. Os avisos SC2016/SC2089/SC2090
-# apontam exatamente o comportamento desejado e são silenciados abaixo.
+# `sh -c` DENTRO do container: as aspas e os $ das variáveis do container
+# precisam sobreviver literais até lá, por isso o escape. Os avisos
+# SC2016/SC2089/SC2090 apontam exatamente o comportamento desejado.
+#
+# lab   = administrador, direto no MinIO. Cria bucket, sobe arquivo, cria usuário.
+# proxy = usuário dedicado somente-leitura, através do proxy. SÓ assina URLs.
+#         O access key deste alias fica visível no X-Amz-Credential da URL.
 # shellcheck disable=SC2016,SC2089
-MC_ALIAS_ADMIN='mc --no-color alias set lab http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null'
-# shellcheck disable=SC2016,SC2089
-MC_ALIAS_PROXY='mc --no-color --insecure alias set proxy "$PUBLIC_SCHEME://$PUBLIC_HOST:$NGINX_HTTPS_PORT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null'
+MC_ALIAS_ADMIN='mc --no-color alias set lab https://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null'
+# shellcheck disable=SC2089
+MC_ALIAS_PROXY="mc --no-color $MC_TLS_FLAG alias set proxy \"\$PUBLIC_SCHEME://\$PUBLIC_HOST:\$NGINX_HTTPS_PORT\" \"\$MINIO_PRESIGN_USER\" \"\$MINIO_PRESIGN_PASSWORD\" >/dev/null"
 # shellcheck disable=SC2090
 export MC_ALIAS_ADMIN MC_ALIAS_PROXY
 
