@@ -35,6 +35,28 @@ A assinatura da URL protege o **hostname** e o **caminho**. Por isso:
 
 Se qualquer um desses três mudar, o MinIO responde `SignatureDoesNotMatch`.
 
+## Quem assina a URL
+
+O usuário que assina fica **visível na URL**, no parâmetro `X-Amz-Credential`:
+
+```
+...&X-Amz-Credential=leitor-videos%2F20260806%2Fus-east-1%2Fs3%2Faws4_request&...
+```
+
+Hoje, em produção, esse valor é `minioadmin` — o administrador do MinIO vai para
+o navegador de todo usuário que abre um vídeo.
+
+Aqui a aplicação cria um usuário `leitor-videos` com uma permissão só:
+
+```json
+{"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": ["arn:aws:s3:::memoriais/*"]}
+```
+
+Ele lê objetos do bucket e nada mais — não lista, não grava, não apaga, não
+enxerga outros buckets. Se a URL vazar, o que vaza é essa identidade.
+
+Dá para conferir no console do MinIO, em **Identity → Users**.
+
 ## Como rodar
 
 Adicione no arquivo de hosts do Windows

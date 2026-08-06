@@ -8,29 +8,48 @@ from datetime import timedelta
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from minio import Minio
+from minio import Minio, MinioAdmin
+from minio.credentials import StaticProvider
 
 BUCKET = os.environ["MINIO_BUCKET"]
 OBJETO = os.environ["TEST_OBJECT"]
 APP_HOST = os.environ["APP_HOST"]
 MINIO_HOST = os.environ["MINIO_HOST"]
-USUARIO = os.environ["MINIO_ROOT_USER"]
-SENHA = os.environ["MINIO_ROOT_PASSWORD"]
+MINIO_ROOT_USER = os.environ["MINIO_ROOT_USER"]
+MINIO_ROOT_PASSWORD = os.environ["MINIO_ROOT_PASSWORD"]
+MINIO_LEITOR_USER = os.environ["MINIO_LEITOR_USER"]
+MINIO_LEITOR_PASSWORD = os.environ["MINIO_LEITOR_PASSWORD"]
 HORAS = int(os.environ["EXPIRA_HORAS"])
 VIDEO_URL = os.environ["VIDEO_URL"]
 
 app = FastAPI()
 
-# Cliente que fala com o MinIO de verdade, pela rede interna.
-admin = Minio("minio:9000", USUARIO, SENHA, secure=True, cert_check=False)
+# Cliente que conversa com o MinIO pela rede interna.
+admin = Minio("minio:9000", MINIO_ROOT_USER, MINIO_ROOT_PASSWORD, secure=True, cert_check=False)
 
-# Mensagem de erro do preparo, mostrada na página se algo falhar.
+# Mensagem de erro se algo falhar.
 erro_preparo = ""
 
 
 def cliente(endereco):
-    """Cliente usado só para assinar URLs. Não acessa a rede."""
-    return Minio(endereco, USUARIO, SENHA, secure=True, region="us-east-1")
+    """Cliente que assina as URLs, com o usuário leitor. Não acessa a rede."""
+    return Minio(endereco, MINIO_LEITOR_USER, MINIO_LEITOR_PASSWORD, secure=True, region="us-east-1")
+
+
+# Permissão única: ler objetos deste bucket. Nada de listar, gravar ou apagar.
+POLICY = """{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/*"]}]}"""
+
+
+def criar_usuario_leitor():
+    """Cria o usuário que assina as URLs, com permissão só de leitura."""
+    adm = MinioAdmin("minio:9000", StaticProvider(MINIO_ROOT_USER, MINIO_ROOT_PASSWORD),
+                     secure=True, cert_check=False)
+    with open("/tmp/leitura.json", "w") as f:
+        f.write(POLICY % BUCKET)
+    adm.user_add(MINIO_LEITOR_USER, MINIO_LEITOR_PASSWORD)
+    adm.policy_add("somente-leitura", "/tmp/leitura.json")
+    adm.policy_set("somente-leitura", user=MINIO_LEITOR_USER)
 
 
 def video_existe():
@@ -67,6 +86,8 @@ def preparar():
         if not admin.bucket_exists(BUCKET):
             admin.make_bucket(BUCKET)
 
+        criar_usuario_leitor()
+
         if not video_existe():
             video = baixar_video()
             admin.put_object(BUCKET, OBJETO, io.BytesIO(video), len(video),
@@ -77,7 +98,7 @@ def preparar():
 
 @app.on_event("startup")
 def iniciar():
-    # Em segundo plano para o site responder na hora, sem 502 enquanto baixa.
+    # Inic ia em segundo plano para o site responder na hora, sem gerar erro 502 enquanto baixa o vídeo.
     threading.Thread(target=preparar, daemon=True).start()
 
 
@@ -115,25 +136,25 @@ def pagina():
           <p>Preparando o vídeo, aguarde e recarregue a página.</p>
         </div>""")
 
-    # As duas URLs são assinadas aqui, cada uma para um endereço diferente.
-    url_errada = cliente(f"{MINIO_HOST}:9000").presigned_get_object(
+    # As duas URLs são pré-assinadas aqui, cada uma para um endereço (interno e público) para demonstração.
+    url_interna = cliente(f"{MINIO_HOST}:9000").presigned_get_object(
         BUCKET, OBJETO, expires=timedelta(hours=HORAS))
-    url_certa = cliente(f"{APP_HOST}:8443").presigned_get_object(
+    url_valido_com_proxy = cliente(f"{APP_HOST}:8443").presigned_get_object(
         BUCKET, OBJETO, expires=timedelta(hours=HORAS))
 
     return html(f"""
 <div class="caixa">
   <h2 class="errado">Como é hoje</h2>
-  <video controls src="{url_errada}"></video>
+  <video controls src="{url_interna}"></video>
   <p>A URL aponta direto para o MinIO. O navegador não confia no certificado
-     dele, então o vídeo não toca.</p>
-  <small>{url_errada[:70]}...</small>
+     dele que é interno, então o vídeo não toca.</p>
+  <small>{url_interna[:70]}...</small>
 </div>
 
 <div class="caixa">
   <h2 class="certo">Como deveria ser</h2>
-  <video controls src="{url_certa}"></video>
+  <video controls src="{url_valido_com_proxy}"></video>
   <p>A URL aponta para o proxy, no mesmo endereço da aplicação. Certificado
      confiável e o MinIO fica escondido.</p>
-  <small>{url_certa[:70]}...</small>
+  <small>{url_valido_com_proxy[:70]}...</small>
 </div>""")
