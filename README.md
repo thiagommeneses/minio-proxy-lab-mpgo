@@ -91,19 +91,50 @@ app/main.py          a aplicação
 
 ## Conferindo pelo terminal
 
+Para a URL pré-assinada os comandos abaixo pegam a URL direto da página.
+
+No WSL:
+
 ```bash
-# o proxy entrega o vídeo
-curl -k -s -o /dev/null -w '%{http_code}\n' "<url do player da direita>"   # 200
+URL=$(curl -ks https://intranet.lab.local:8443/ \
+      | grep -o 'https://intranet[^"]*X-Amz-Signature=[a-f0-9]*' | head -1)
 
-# adiantar o vídeo funciona (é o que o player faz ao arrastar a barra)
-curl -k -s -r 0-1023 -o /dev/null -w '%{http_code}\n' "<mesma url>"        # 206
+curl -k -s -o /dev/null -w '%{http_code}\n' "$URL"            # 200 — vídeo entregue
+curl -k -s -r 0-1023 -o /dev/null -w '%{http_code}\n' "$URL"  # 206 — pedaço do vídeo
+```
 
-# sem a assinatura não passa
-curl -k -s -o /dev/null -w '%{http_code}\n' "https://intranet.lab.local:8443/memoriais/depoimento.mp4"  # 403
+No PowerShell:
 
-# ver o Host que chegou no proxy
+```powershell
+$html = (curl.exe -ks https://intranet.lab.local:8443/) -join "`n"
+$URL  = [regex]::Match($html, 'https://intranet[^"]*X-Amz-Signature=[a-f0-9]+').Value
+
+curl.exe -k -s -o NUL -w "%{http_code}`n" $URL
+curl.exe -k -s -r 0-1023 -o NUL -w "%{http_code}`n" $URL
+```
+
+O `206` é o mesmo tipo de resposta que o player usa quando você arrasta a barra
+do vídeo: ele pede só o trecho que precisa, em vez do arquivo inteiro.
+
+Sem a assinatura, o MinIO recusa:
+
+```bash
+curl -k -s -o /dev/null -w '%{http_code}\n' \
+     https://intranet.lab.local:8443/memoriais/depoimento.mp4   # 403 — esperado
+```
+
+Para ver o `Host` que chegou no proxy e o trecho pedido em cada requisição:
+
+```bash
 docker compose logs nginx
 ```
 
-Use `GET` e não `curl -I`. A assinatura também protege o método, e ela foi
-gerada para `GET` — um `HEAD` devolve `403` mesmo estando tudo certo.
+### Dois erros comuns
+
+**Não use `curl -I`.** A assinatura protege também o método HTTP, e a URL foi
+assinada para `GET`. Um `HEAD` devolve `403` mesmo com tudo funcionando.
+
+**Não escape a URL.** Se colar a URL à mão, use aspas simples e não acrescente
+`\` antes de `?`, `=` ou `&`. A contrabarra entra no caminho, muda o que foi
+assinado e o resultado é `403`. No log do nginx isso aparece como
+`depoimento.mp4\x5C`.
